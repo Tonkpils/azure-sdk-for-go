@@ -90,10 +90,15 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		if options.LeaseAcquireInterval > 0 {
 			opts.LeaseAcquireInterval = options.LeaseAcquireInterval
 		}
+		if options.RequestTimeout > 0 {
+			opts.RequestTimeout = options.RequestTimeout
+		}
 		opts.StartFromBeginning = options.StartFromBeginning
 		opts.StartTime = options.StartTime
 		opts.LeasePrefix = options.LeasePrefix
 		opts.Mode = options.Mode
+		opts.MinPartitionCount = options.MinPartitionCount
+		opts.MaxPartitionCount = options.MaxPartitionCount
 	}
 
 	instanceName, err := generateInstanceName()
@@ -104,7 +109,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix)
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
 	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode)
-	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval)
+	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount)
 
 	return &ChangeFeedProcessor{
 		processorName:      processorName,

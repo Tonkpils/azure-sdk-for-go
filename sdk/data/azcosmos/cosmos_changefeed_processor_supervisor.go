@@ -148,7 +148,15 @@ func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration, error) {
 	opts := s.buildChangeFeedOptions()
 
-	resp, err := s.container.GetChangeFeed(ctx, &opts)
+	// Apply per-request timeout
+	reqCtx := ctx
+	if s.options.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, s.options.RequestTimeout)
+		defer cancel()
+	}
+
+	resp, err := s.container.GetChangeFeed(reqCtx, &opts)
 	if err != nil {
 		var responseErr *azcore.ResponseError
 		if errors.As(err, &responseErr) {

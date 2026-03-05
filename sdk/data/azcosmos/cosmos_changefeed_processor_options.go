@@ -50,6 +50,19 @@ type ChangeFeedProcessorOptions struct {
 	// (includes deletes and all intermediate versions). Requires the container
 	// to have a ChangeFeedPolicy with a retention window configured.
 	Mode ChangeFeedMode
+
+	// MinPartitionCount is the minimum number of partitions this instance should own.
+	// Default: 0 (no minimum, let the balancer decide).
+	MinPartitionCount int
+
+	// MaxPartitionCount is the maximum number of partitions this instance should own.
+	// Default: 0 (no maximum, take as many as the balancer assigns).
+	MaxPartitionCount int
+
+	// RequestTimeout is the maximum duration for a single change feed request.
+	// If a request takes longer, it is cancelled and retried.
+	// Default: 30 seconds.
+	RequestTimeout time.Duration
 }
 
 // changeFeedProcessorDefaults returns options with sensible defaults.
@@ -60,5 +73,6 @@ func changeFeedProcessorDefaults() ChangeFeedProcessorOptions {
 		LeaseExpirationInterval: 60 * time.Second,
 		LeaseRenewInterval:      17 * time.Second,
 		LeaseAcquireInterval:    13 * time.Second,
+		RequestTimeout:          30 * time.Second,
 	}
 }
