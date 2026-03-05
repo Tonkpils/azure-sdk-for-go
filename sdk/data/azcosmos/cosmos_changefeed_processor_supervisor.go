@@ -5,9 +5,12 @@ package azcosmos
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 )
 
 // changeFeedProcessorSupervisor manages a single partition's change feed polling loop.
@@ -38,13 +41,23 @@ func newChangeFeedProcessorSupervisor(
 	}
 }
 
-// run is the main polling loop for this partition. It runs until ctx is cancelled.
+// errPartitionGone signals that the partition range has split or merged.
+// The supervisor should stop and let the orchestrator re-sync leases.
+var errPartitionGone = errors.New("partition gone (split or merge detected)")
+
+// run is the main polling loop for this partition. It runs until ctx is
+// cancelled or the partition is gone (410). On a 410 the supervisor exits
+// so the orchestrator can re-sync leases and start new supervisors for the
+// child ranges.
 func (s *changeFeedProcessorSupervisor) run(ctx context.Context) error {
 	ticker := time.NewTicker(s.options.PollInterval)
 	defer ticker.Stop()
 
 	for {
-		s.poll(ctx)
+		if err := s.poll(ctx); errors.Is(err, errPartitionGone) {
+			log.Printf("changefeed supervisor: partition gone for lease %s, exiting for re-sync", s.lease.ID)
+			return err
+		}
 
 		select {
 		case <-ctx.Done():
@@ -55,22 +68,27 @@ func (s *changeFeedProcessorSupervisor) run(ctx context.Context) error {
 }
 
 // poll executes a single change feed read, dispatches documents to the handler,
-// and checkpoints the lease on success.
-func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) {
+// and checkpoints the lease on success. Returns errPartitionGone on 410.
+func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) error {
 	opts := s.buildChangeFeedOptions()
 
 	resp, err := s.container.GetChangeFeed(ctx, &opts)
 	if err != nil {
+		// 410 Gone means the partition split or merged.
+		var responseErr *azcore.ResponseError
+		if errors.As(err, &responseErr) && responseErr.StatusCode == http.StatusGone {
+			return errPartitionGone
+		}
 		log.Printf("changefeed supervisor: error reading feed range %s: %v", s.lease.ID, err)
-		return
+		return nil
 	}
 
 	if resp.RawResponse != nil && resp.RawResponse.StatusCode == http.StatusNotModified {
-		return
+		return nil
 	}
 
 	if resp.Count == 0 {
-		return
+		return nil
 	}
 
 	documents := make([][]byte, len(resp.Documents))
@@ -80,10 +98,11 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) {
 
 	if err := s.handler(ctx, documents); err != nil {
 		log.Printf("changefeed supervisor: handler error for lease %s: %v", s.lease.ID, err)
-		return
+		return nil
 	}
 
 	s.checkpoint(ctx, &resp)
+	return nil
 }
 
 // buildChangeFeedOptions constructs the options for a GetChangeFeed call based
