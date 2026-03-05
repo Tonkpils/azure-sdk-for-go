@@ -13,7 +13,7 @@ import (
 // --- helpers ---
 
 func newTestLease(owner string, feedRange FeedRange, timestamp int64) changeFeedProcessorLease {
-	id := leaseIDFromFeedRange(feedRange)
+	id := leaseIDFromFeedRange(feedRange, "")
 	return changeFeedProcessorLease{
 		ID:           id,
 		PartitionKey: id,
@@ -33,9 +33,9 @@ func TestLeaseIDFromFeedRange(t *testing.T) {
 	fr1 := newTestFeedRange("", "FF")
 	fr2 := newTestFeedRange("FF", "FFFF")
 
-	id1a := leaseIDFromFeedRange(fr1)
-	id1b := leaseIDFromFeedRange(fr1)
-	id2 := leaseIDFromFeedRange(fr2)
+	id1a := leaseIDFromFeedRange(fr1, "")
+	id1b := leaseIDFromFeedRange(fr1, "")
+	id2 := leaseIDFromFeedRange(fr2, "")
 
 	if id1a != id1b {
 		t.Errorf("same feed range produced different IDs: %q vs %q", id1a, id1b)
@@ -51,10 +51,10 @@ func TestLeaseIDFromFeedRange(t *testing.T) {
 func TestNewChangeFeedProcessorLease(t *testing.T) {
 	fr := newTestFeedRange("00", "FF")
 	before := time.Now().Unix()
-	lease := newChangeFeedProcessorLease(fr, "worker-1")
+	lease := newChangeFeedProcessorLease(fr, "worker-1", "", 0)
 	after := time.Now().Unix()
 
-	expectedID := leaseIDFromFeedRange(fr)
+	expectedID := leaseIDFromFeedRange(fr, "")
 	if lease.ID != expectedID {
 		t.Errorf("ID: got %q, want %q", lease.ID, expectedID)
 	}

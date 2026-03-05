@@ -28,6 +28,8 @@ type changeFeedProcessorLease struct {
 	FeedRange *FeedRange `json:"feedRange,omitempty"`
 	// Timestamp is when this lease was last updated (Unix epoch seconds).
 	Timestamp int64 `json:"timestamp,omitempty"`
+	// Mode tracks which change feed mode this lease was created with.
+	Mode ChangeFeedMode `json:"mode,omitempty"`
 	// ETag is the Cosmos DB ETag for optimistic concurrency control.
 	ETag string `json:"_etag,omitempty"`
 	// ResourceID from Cosmos DB.
@@ -38,15 +40,16 @@ type changeFeedProcessorLease struct {
 	TTL int32 `json:"ttl,omitempty"`
 }
 
-// newChangeFeedProcessorLease creates a new lease for the given feed range and owner.
-func newChangeFeedProcessorLease(feedRange FeedRange, owner string) changeFeedProcessorLease {
-	id := leaseIDFromFeedRange(feedRange)
+// newChangeFeedProcessorLease creates a new lease for the given feed range, owner, prefix, and mode.
+func newChangeFeedProcessorLease(feedRange FeedRange, owner string, prefix string, mode ChangeFeedMode) changeFeedProcessorLease {
+	id := leaseIDFromFeedRange(feedRange, prefix)
 	return changeFeedProcessorLease{
 		ID:           id,
 		PartitionKey: id,
 		Owner:        owner,
 		FeedRange:    &feedRange,
 		Timestamp:    time.Now().Unix(),
+		Mode:         mode,
 	}
 }
 
@@ -77,7 +80,13 @@ func (l *changeFeedProcessorLease) fromJSON(data []byte) error {
 // leaseIDFromFeedRange generates a deterministic lease ID from a feed range.
 // The ID is a truncated SHA-256 hex digest of the range boundaries, keeping it
 // short while avoiding collisions across realistic partition key ranges.
-func leaseIDFromFeedRange(feedRange FeedRange) string {
-	hash := sha256.Sum256([]byte(feedRange.MinInclusive + "-" + feedRange.MaxExclusive))
-	return fmt.Sprintf("%x", hash[:16])
+// When prefix is non-empty it is prepended with a ".." separator for namespace isolation.
+func leaseIDFromFeedRange(feedRange FeedRange, prefix string) string {
+	input := feedRange.MinInclusive + "-" + feedRange.MaxExclusive
+	hash := sha256.Sum256([]byte(input))
+	id := fmt.Sprintf("%x", hash[:16])
+	if prefix != "" {
+		return prefix + ".." + id
+	}
+	return id
 }

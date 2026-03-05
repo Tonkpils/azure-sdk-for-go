@@ -17,12 +17,15 @@ import (
 // in the lease container. Uses ETag-based optimistic concurrency for all writes.
 type changeFeedProcessorLeaseStore struct {
 	container *ContainerClient
+	prefix    string
 }
 
 // newChangeFeedProcessorLeaseStore creates a new lease store backed by the given container.
-func newChangeFeedProcessorLeaseStore(container *ContainerClient) *changeFeedProcessorLeaseStore {
+// When prefix is non-empty, getAllLeases filters to only leases matching the prefix.
+func newChangeFeedProcessorLeaseStore(container *ContainerClient, prefix string) *changeFeedProcessorLeaseStore {
 	return &changeFeedProcessorLeaseStore{
 		container: container,
+		prefix:    prefix,
 	}
 }
 
@@ -30,6 +33,9 @@ func newChangeFeedProcessorLeaseStore(container *ContainerClient) *changeFeedPro
 // Uses a cross-partition query to retrieve every lease across all partitions.
 func (s *changeFeedProcessorLeaseStore) getAllLeases(ctx context.Context) ([]changeFeedProcessorLease, error) {
 	query := "SELECT * FROM c"
+	if s.prefix != "" {
+		query = fmt.Sprintf("SELECT * FROM c WHERE STARTSWITH(c.id, '%s')", s.prefix+"..")
+	}
 	pk := NewPartitionKey()
 	pager := s.container.NewQueryItemsPager(query, pk, nil)
 
