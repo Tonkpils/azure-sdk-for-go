@@ -63,6 +63,10 @@ type ChangeFeedProcessorOptions struct {
 	// If a request takes longer, it is cancelled and retried.
 	// Default: 30 seconds.
 	RequestTimeout time.Duration
+
+	// HealthMonitor provides optional callbacks for lease lifecycle events and errors.
+	// If nil, events are logged to the standard logger.
+	HealthMonitor *ChangeFeedProcessorHealthMonitor
 }
 
 // changeFeedProcessorDefaults returns options with sensible defaults.

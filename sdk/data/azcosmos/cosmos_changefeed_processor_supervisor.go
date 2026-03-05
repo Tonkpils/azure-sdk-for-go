@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -30,6 +29,7 @@ type changeFeedProcessorSupervisor struct {
 	store     *changeFeedProcessorLeaseStore
 	handler   ChangeFeedProcessorHandler
 	options   ChangeFeedProcessorOptions
+	monitor   *ChangeFeedProcessorHealthMonitor
 }
 
 // newChangeFeedProcessorSupervisor creates a supervisor for the given lease.
@@ -39,6 +39,7 @@ func newChangeFeedProcessorSupervisor(
 	store *changeFeedProcessorLeaseStore,
 	handler ChangeFeedProcessorHandler,
 	options ChangeFeedProcessorOptions,
+	monitor *ChangeFeedProcessorHealthMonitor,
 ) *changeFeedProcessorSupervisor {
 	return &changeFeedProcessorSupervisor{
 		lease:     lease,
@@ -46,6 +47,7 @@ func newChangeFeedProcessorSupervisor(
 		store:     store,
 		handler:   handler,
 		options:   options,
+		monitor:   monitor,
 	}
 }
 
@@ -99,7 +101,7 @@ func (s *changeFeedProcessorSupervisor) renewLoop(ctx context.Context) error {
 				if isPreconditionFailed(err) {
 					return errLeaseLost
 				}
-				log.Printf("changefeed supervisor: renew failed for %s: %v", s.lease.ID, err)
+				s.monitor.notifyError(ctx, s.lease.ID, fmt.Errorf("renew failed: %w", err))
 			}
 		}
 	}
@@ -175,7 +177,9 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 				return retryAfter, nil
 			}
 		}
-		return 0, fmt.Errorf("change feed read error: %w", err)
+		cfErr := fmt.Errorf("change feed read error: %w", err)
+		s.monitor.notifyError(ctx, s.lease.ID, cfErr)
+		return 0, cfErr
 	}
 
 	if resp.RawResponse != nil && resp.RawResponse.StatusCode == http.StatusNotModified {
