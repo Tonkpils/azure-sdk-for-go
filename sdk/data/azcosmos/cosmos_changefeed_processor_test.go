@@ -154,7 +154,7 @@ func TestLeaseJSONRoundTrip(t *testing.T) {
 // --- Balancer Tests ---
 
 func TestBalancerNoLeases(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0)
 	result := b.selectLeasesToAcquire(nil)
 	if result != nil {
 		t.Errorf("expected nil for empty lease list, got %v", result)
@@ -167,7 +167,7 @@ func TestBalancerNoLeases(t *testing.T) {
 }
 
 func TestBalancerAllExpired(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0)
 	expired := time.Now().Add(-120 * time.Second).Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -184,7 +184,7 @@ func TestBalancerAllExpired(t *testing.T) {
 }
 
 func TestBalancerEvenDistribution(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("new-worker", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("new-worker", 60*time.Second, 0, 0)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -209,7 +209,7 @@ func TestBalancerEvenDistribution(t *testing.T) {
 }
 
 func TestBalancerAlreadyBalanced(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-A", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("worker-A", 60*time.Second, 0, 0)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -227,7 +227,7 @@ func TestBalancerAlreadyBalanced(t *testing.T) {
 }
 
 func TestBalancerStealFromBusiest(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second, 0, 0)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -249,7 +249,7 @@ func TestBalancerStealFromBusiest(t *testing.T) {
 }
 
 func TestBalancerNewWorkerJoining(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-C", 60*time.Second)
+	b := newChangeFeedProcessorBalancer("worker-C", 60*time.Second, 0, 0)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{

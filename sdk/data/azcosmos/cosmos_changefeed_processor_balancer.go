@@ -15,13 +15,17 @@ import (
 type changeFeedProcessorBalancer struct {
 	instanceName       string
 	expirationInterval time.Duration
+	minPartitionCount  int
+	maxPartitionCount  int
 }
 
 // newChangeFeedProcessorBalancer creates a balancer for the given processor instance.
-func newChangeFeedProcessorBalancer(instanceName string, expirationInterval time.Duration) *changeFeedProcessorBalancer {
+func newChangeFeedProcessorBalancer(instanceName string, expirationInterval time.Duration, minPartitionCount, maxPartitionCount int) *changeFeedProcessorBalancer {
 	return &changeFeedProcessorBalancer{
 		instanceName:       instanceName,
 		expirationInterval: expirationInterval,
+		minPartitionCount:  minPartitionCount,
+		maxPartitionCount:  maxPartitionCount,
 	}
 }
 
@@ -60,6 +64,12 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 
 	// Step 2: Calculate target partitions per worker = ceil(total / workers).
 	target := int(math.Ceil(float64(totalPartitions) / float64(totalWorkers)))
+	if b.maxPartitionCount > 0 && target > b.maxPartitionCount {
+		target = b.maxPartitionCount
+	}
+	if b.minPartitionCount > 0 && target < b.minPartitionCount {
+		target = b.minPartitionCount
+	}
 
 	// Step 3: How many more partitions does this instance need?
 	myCurrentCount := workerToPartitionCount[b.instanceName]
