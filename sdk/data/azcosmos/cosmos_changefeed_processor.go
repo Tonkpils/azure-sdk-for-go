@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -40,6 +39,7 @@ type ChangeFeedProcessor struct {
 	monitoredContainer *ContainerClient
 	handler            ChangeFeedProcessorHandler
 	options            ChangeFeedProcessorOptions
+	monitor            *ChangeFeedProcessorHealthMonitor
 
 	leaseStore   *changeFeedProcessorLeaseStore
 	leaseManager *changeFeedProcessorLeaseManager
@@ -99,6 +99,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		opts.Mode = options.Mode
 		opts.MinPartitionCount = options.MinPartitionCount
 		opts.MaxPartitionCount = options.MaxPartitionCount
+		opts.HealthMonitor = options.HealthMonitor
 	}
 
 	instanceName, err := generateInstanceName()
@@ -117,6 +118,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		monitoredContainer: c,
 		handler:            handler,
 		options:            opts,
+		monitor:            opts.HealthMonitor,
 		leaseStore:         leaseStore,
 		leaseManager:       leaseManager,
 		synchronizer:       synchronizer,
@@ -162,7 +164,7 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 	for {
 		// Re-synchronize on every cycle to pick up partition splits/merges.
 		if err := p.synchronizer.synchronizeLeases(ctx); err != nil {
-			log.Printf("changefeed processor: lease sync failed: %v", err)
+			p.monitor.notifyError(ctx, "", fmt.Errorf("lease sync failed: %w", err))
 		}
 
 		p.acquireLeases(ctx)
@@ -198,7 +200,7 @@ func (p *ChangeFeedProcessor) Stop() error {
 func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	allLeases, err := p.leaseStore.getAllLeases(ctx)
 	if err != nil {
-		log.Printf("changefeed processor: failed to list leases: %v", err)
+		p.monitor.notifyError(ctx, "", fmt.Errorf("failed to list leases: %w", err))
 		return
 	}
 
@@ -206,8 +208,10 @@ func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	for i := range leasesToTake {
 		lease := &leasesToTake[i]
 		if err := p.leaseManager.acquireLease(ctx, lease); err != nil {
-			continue // another instance got it — expected
+			p.monitor.notifyError(ctx, lease.ID, err)
+			continue
 		}
+		p.monitor.notifyLeaseAcquired(ctx, lease.ID)
 		p.startSupervisor(ctx, lease)
 	}
 }
@@ -226,7 +230,7 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 	p.supervisors[lease.ID] = supervisorCancel
 
 	supervisor := newChangeFeedProcessorSupervisor(
-		lease, p.monitoredContainer, p.leaseStore, p.handler, p.options,
+		lease, p.monitoredContainer, p.leaseStore, p.handler, p.options, p.monitor,
 	)
 	go func() {
 		defer func() {
@@ -256,13 +260,13 @@ func (p *ChangeFeedProcessor) renewLoop(ctx context.Context) {
 func (p *ChangeFeedProcessor) renewOwnedLeases(ctx context.Context) {
 	allLeases, err := p.leaseStore.getAllLeases(ctx)
 	if err != nil {
-		log.Printf("changefeed processor: failed to list leases for renewal: %v", err)
+		p.monitor.notifyError(ctx, "", fmt.Errorf("failed to list leases for renewal: %w", err))
 		return
 	}
 	for i := range allLeases {
 		if allLeases[i].Owner == p.instanceName {
 			if err := p.leaseManager.renewLease(ctx, &allLeases[i]); err != nil {
-				log.Printf("changefeed processor: failed to renew lease %s: %v", allLeases[i].ID, err)
+				p.monitor.notifyError(ctx, allLeases[i].ID, fmt.Errorf("failed to renew lease: %w", err))
 			}
 		}
 	}
@@ -286,6 +290,7 @@ func (p *ChangeFeedProcessor) releaseAllLeases() {
 	for i := range allLeases {
 		if allLeases[i].Owner == p.instanceName {
 			_ = p.leaseManager.releaseLease(ctx, &allLeases[i])
+			p.monitor.notifyLeaseReleased(ctx, allLeases[i].ID)
 		}
 	}
 }
