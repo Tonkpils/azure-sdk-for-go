@@ -14,24 +14,32 @@ import (
 type changeFeedProcessorSynchronizer struct {
 	container *ContainerClient
 	store     *changeFeedProcessorLeaseStore
+	prefix    string
+	mode      ChangeFeedMode
 }
 
 // newChangeFeedProcessorSynchronizer creates a synchronizer for the given container and lease store.
 func newChangeFeedProcessorSynchronizer(
 	container *ContainerClient,
 	store *changeFeedProcessorLeaseStore,
+	prefix string,
+	mode ChangeFeedMode,
 ) *changeFeedProcessorSynchronizer {
 	return &changeFeedProcessorSynchronizer{
 		container: container,
 		store:     store,
+		prefix:    prefix,
+		mode:      mode,
 	}
 }
 
 // synchronizeLeases compares the container's current feed ranges against existing
-// leases and creates new leases for any ranges that are missing. When a new range
-// falls within an existing lease's range (partition split), the child lease inherits
-// the parent's continuation token so processing resumes from where it left off.
-// Stale parent leases are removed after their children are created.
+// leases and creates new leases for any ranges that are missing. It handles both
+// partition splits (one parent → multiple children) and partition merges (multiple
+// children → one parent). When a split is detected the child inherits the parent's
+// continuation token. When a merge is detected the new lease inherits the
+// continuation token with the latest timestamp among the merged children.
+// Stale leases are removed after their replacements are created.
 func (s *changeFeedProcessorSynchronizer) synchronizeLeases(ctx context.Context) error {
 	feedRanges, err := s.container.GetFeedRanges(ctx)
 	if err != nil {
@@ -48,20 +56,35 @@ func (s *changeFeedProcessorSynchronizer) synchronizeLeases(ctx context.Context)
 		existing[lease.ID] = struct{}{}
 	}
 
-	// Track parent leases whose ranges have been split into children.
-	staleParents := make(map[string]struct{})
+	staleLeases := make(map[string]struct{})
 
 	for _, fr := range feedRanges {
-		id := leaseIDFromFeedRange(fr)
+		id := leaseIDFromFeedRange(fr, s.prefix)
 		if _, ok := existing[id]; ok {
 			continue
 		}
 
-		// New range — look for a parent lease whose range contains this one.
-		lease := newChangeFeedProcessorLease(fr, "")
+		lease := newChangeFeedProcessorLease(fr, "", s.prefix, s.mode)
+
+		// Phase 1: Check for split (one parent contains this child)
 		if parent := findParentLease(fr, leases); parent != nil {
 			lease.ContinuationToken = parent.ContinuationToken
-			staleParents[parent.ID] = struct{}{}
+			staleLeases[parent.ID] = struct{}{}
+		} else {
+			// Phase 2: Check for merge (this range covers multiple children)
+			children := findChildLeases(fr, leases)
+			if len(children) > 0 {
+				best := children[0]
+				for _, child := range children[1:] {
+					if child.Timestamp > best.Timestamp {
+						best = child
+					}
+				}
+				lease.ContinuationToken = best.ContinuationToken
+				for _, child := range children {
+					staleLeases[child.ID] = struct{}{}
+				}
+			}
 		}
 
 		if _, err := s.store.createLeaseIfNotExists(ctx, &lease); err != nil {
@@ -69,10 +92,20 @@ func (s *changeFeedProcessorSynchronizer) synchronizeLeases(ctx context.Context)
 		}
 	}
 
-	// Clean up parent leases that were split — their children have taken over.
-	for parentID := range staleParents {
-		if err := s.store.deleteLease(ctx, parentID); err != nil {
-			log.Printf("changefeed synchronizer: failed to delete stale parent lease %s: %v", parentID, err)
+	// Detect leases whose feed ranges no longer exist (fully merged away).
+	currentRangeIDs := make(map[string]struct{}, len(feedRanges))
+	for _, fr := range feedRanges {
+		currentRangeIDs[leaseIDFromFeedRange(fr, s.prefix)] = struct{}{}
+	}
+	for _, lease := range leases {
+		if _, stillExists := currentRangeIDs[lease.ID]; !stillExists {
+			staleLeases[lease.ID] = struct{}{}
+		}
+	}
+
+	for leaseID := range staleLeases {
+		if err := s.store.deleteLease(ctx, leaseID); err != nil {
+			log.Printf("changefeed synchronizer: failed to delete stale lease %s: %v", leaseID, err)
 		}
 	}
 
@@ -97,4 +130,25 @@ func findParentLease(child FeedRange, leases []changeFeedProcessorLease) *change
 		}
 	}
 	return nil
+}
+
+// findChildLeases returns all leases whose feed ranges are fully contained
+// within the given parent range. This detects partition merges where multiple
+// smaller ranges have been combined into one larger range.
+func findChildLeases(parent FeedRange, leases []changeFeedProcessorLease) []*changeFeedProcessorLease {
+	var children []*changeFeedProcessorLease
+	for i := range leases {
+		l := &leases[i]
+		if l.FeedRange == nil {
+			continue
+		}
+		// Child must be strictly contained (not equal)
+		if parent.MinInclusive <= l.FeedRange.MinInclusive && parent.MaxExclusive >= l.FeedRange.MaxExclusive {
+			if parent.MinInclusive == l.FeedRange.MinInclusive && parent.MaxExclusive == l.FeedRange.MaxExclusive {
+				continue
+			}
+			children = append(children, l)
+		}
+	}
+	return children
 }
