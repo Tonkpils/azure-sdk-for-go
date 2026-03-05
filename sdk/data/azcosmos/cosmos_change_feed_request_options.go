@@ -27,6 +27,9 @@ type ChangeFeedOptions struct {
 	// Feed Range specifies the range of pk values that map to a logical partition.
 	FeedRange *FeedRange
 
+	// Mode specifies the change feed mode. Default is ChangeFeedModeLatestVersion.
+	Mode ChangeFeedMode
+
 	// CompositeContinuation is used to continue reading the change feed from a specific point.
 	Continuation *string
 }
@@ -34,7 +37,12 @@ type ChangeFeedOptions struct {
 func (options *ChangeFeedOptions) toHeaders(partitionKeyRanges []partitionKeyRange) *map[string]string {
 	headers := make(map[string]string)
 
-	headers[cosmosHeaderChangeFeed] = cosmosHeaderValuesChangeFeed
+	if options.Mode == ChangeFeedModeAllVersionsAndDeletes {
+		headers[cosmosHeaderChangeFeed] = cosmosHeaderValuesChangeFeedFullFidelity
+		headers[cosmosHeaderChangeFeedWireFormatVersion] = cosmosHeaderValuesChangeFeedWireFormat
+	} else {
+		headers[cosmosHeaderChangeFeed] = cosmosHeaderValuesChangeFeed
+	}
 
 	if options.MaxItemCount > 0 {
 		headers[cosmosHeaderMaxItemCount] = strconv.FormatInt(int64(options.MaxItemCount), 10)
