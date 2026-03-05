@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"time"
@@ -295,6 +296,78 @@ func ExampleContainerClient_NewChangeFeedProcessor_multipleInstances() {
 			PollInterval:   1 * time.Second,
 			MaxItemCount:   500,
 			StartFromBeginning: true,
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	go processor.Start(ctx)
+	<-ctx.Done()
+	_ = processor.Stop()
+}
+
+// ExampleContainerClient_NewChangeFeedProcessor_healthMonitor shows how to
+// use the health monitor for observability into the processor's lease lifecycle.
+func ExampleContainerClient_NewChangeFeedProcessor_healthMonitor() {
+	endpoint, ok := os.LookupEnv("AZURE_COSMOS_ENDPOINT")
+	if !ok {
+		panic("AZURE_COSMOS_ENDPOINT could not be found")
+	}
+
+	key, ok := os.LookupEnv("AZURE_COSMOS_KEY")
+	if !ok {
+		panic("AZURE_COSMOS_KEY could not be found")
+	}
+
+	cred, err := azcosmos.NewKeyCredential(key)
+	if err != nil {
+		panic(err)
+	}
+
+	client, err := azcosmos.NewClientWithKey(endpoint, cred, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	monitoredContainer, err := client.NewContainer("myDatabase", "myContainer")
+	if err != nil {
+		panic(err)
+	}
+
+	leaseContainer, err := client.NewContainer("myDatabase", "myLeases")
+	if err != nil {
+		panic(err)
+	}
+
+	handler := func(ctx context.Context, changes [][]byte) error {
+		fmt.Printf("Processing %d changes\n", len(changes))
+		return nil
+	}
+
+	// Wire up observability — hook into lease lifecycle and errors
+	// without the processor writing to stdout/stderr on its own.
+	monitor := &azcosmos.ChangeFeedProcessorHealthMonitor{
+		OnLeaseAcquired: func(ctx context.Context, leaseID string) {
+			log.Printf("Acquired lease %s", leaseID)
+		},
+		OnLeaseReleased: func(ctx context.Context, leaseID string) {
+			log.Printf("Released lease %s", leaseID)
+		},
+		OnError: func(ctx context.Context, leaseID string, err error) {
+			log.Printf("Error on lease %s: %v", leaseID, err)
+		},
+	}
+
+	processor, err := monitoredContainer.NewChangeFeedProcessor(
+		"myProcessor",
+		leaseContainer,
+		handler,
+		&azcosmos.ChangeFeedProcessorOptions{
+			HealthMonitor: monitor,
 		},
 	)
 	if err != nil {
