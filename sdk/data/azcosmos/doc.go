@@ -9,6 +9,7 @@ The azcosmos package is capable of:
   - Creating, deleting, and reading databases in an account
   - Creating, deleting, updating, and reading containers in a database
   - Creating, deleting, replacing, upserting, and reading items in a container
+  - Reading the change feed (pull model and distributed processor)
 
 # Creating the Client
 
@@ -54,6 +55,7 @@ The following sections provide several code snippets covering some of the most c
   - Creating, reading, and deleting items
   - Querying items
   - Using Transactional Batch
+  - Processing the change feed
 
 # Creating a database
 
@@ -201,6 +203,62 @@ Using Transactional batch
 				fmt.Printf("Transaction failed due to operation %v which failed with status code %v", index, operation.StatusCode)
 			}
 		}
+	}
+
+# Processing the change feed
+
+The ChangeFeedProcessor distributes change feed work across multiple instances
+using lease-based coordination. Each instance automatically acquires partitions,
+polls for changes, and checkpoints progress.
+
+	handler := func(ctx context.Context, changes [][]byte) error {
+		for _, change := range changes {
+			var doc map[string]interface{}
+			json.Unmarshal(change, &doc)
+			fmt.Printf("Changed: %s\n", doc["id"])
+		}
+		return nil
+	}
+
+	processor, err := monitoredContainer.NewChangeFeedProcessor(
+		"myProcessor",
+		leaseContainer,
+		handler,
+		&azcosmos.ChangeFeedProcessorOptions{
+			PollInterval: 2 * time.Second,
+			MaxItemCount: 100,
+		},
+	)
+	handle(err)
+
+	go processor.Start(ctx)
+	// ... later ...
+	processor.Stop()
+
+For full fidelity mode (includes deletes and all intermediate versions),
+set Mode to ChangeFeedModeAllVersionsAndDeletes. The container must have a
+ChangeFeedPolicy with a retention window configured.
+
+	processor, err := monitoredContainer.NewChangeFeedProcessor(
+		"myProcessor",
+		leaseContainer,
+		handler,
+		&azcosmos.ChangeFeedProcessorOptions{
+			Mode: azcosmos.ChangeFeedModeAllVersionsAndDeletes,
+		},
+	)
+
+For low-level manual iteration without the processor, use GetChangeFeed
+with GetFeedRanges directly:
+
+	feedRanges, err := container.GetFeedRanges(ctx)
+	handle(err)
+	for _, fr := range feedRanges {
+		resp, err := container.GetChangeFeed(ctx, &azcosmos.ChangeFeedOptions{
+			FeedRange:    &fr,
+			MaxItemCount: 10,
+		})
+		handle(err)
 	}
 */
 package azcosmos
