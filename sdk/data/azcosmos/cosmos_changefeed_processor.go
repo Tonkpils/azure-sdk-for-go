@@ -143,6 +143,11 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 	defer acquireTicker.Stop()
 
 	for {
+		// Re-synchronize on every cycle to pick up partition splits/merges.
+		if err := p.synchronizer.synchronizeLeases(ctx); err != nil {
+			log.Printf("changefeed processor: lease sync failed: %v", err)
+		}
+
 		p.acquireLeases(ctx)
 
 		select {
