@@ -129,7 +129,7 @@ func (m *changeFeedProcessorLeaseManager) acquireExpiredLeases(ctx context.Conte
 // to call on every processor startup.
 func (m *changeFeedProcessorLeaseManager) initializeLeases(ctx context.Context, feedRanges []FeedRange) error {
 	for _, fr := range feedRanges {
-		lease := newChangeFeedProcessorLease(fr, "")
+		lease := newChangeFeedProcessorLease(fr, "", m.options.LeasePrefix, m.options.Mode)
 		if _, err := m.store.createLeaseIfNotExists(ctx, &lease); err != nil {
 			return fmt.Errorf("failed to initialize lease for range %s-%s: %w", fr.MinInclusive, fr.MaxExclusive, err)
 		}

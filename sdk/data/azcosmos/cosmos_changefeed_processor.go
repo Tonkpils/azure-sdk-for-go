@@ -101,9 +101,9 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		return nil, fmt.Errorf("azcosmos: failed to generate instance name: %w", err)
 	}
 
-	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer)
+	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix)
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
-	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore)
+	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode)
 	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval)
 
 	return &ChangeFeedProcessor{
@@ -135,10 +135,22 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to synchronize leases: %w", err)
 	}
 
-	// 2. Start lease renewal goroutine
+	// 2. Validate mode consistency — leases created with a different mode
+	// cannot be reused because the change feed wire format differs between modes.
+	leases, err := p.leaseStore.getAllLeases(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read leases for mode validation: %w", err)
+	}
+	for _, lease := range leases {
+		if lease.Mode != 0 && lease.Mode != p.options.Mode {
+			return fmt.Errorf("azcosmos: lease %s was created with mode %d but processor is configured for mode %d; delete leases to switch modes", lease.ID, lease.Mode, p.options.Mode)
+		}
+	}
+
+	// 3. Start lease renewal goroutine
 	go p.renewLoop(ctx)
 
-	// 3. Main acquisition loop
+	// 4. Main acquisition loop
 	acquireTicker := time.NewTicker(p.options.LeaseAcquireInterval)
 	defer acquireTicker.Stop()
 

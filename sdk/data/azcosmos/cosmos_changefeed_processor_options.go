@@ -29,6 +29,11 @@ type ChangeFeedProcessorOptions struct {
 
 	// StartFromBeginning starts processing from the beginning of the change feed.
 	// Default: false (starts from current point)
+	//
+	// When StartFromBeginning is true and no StartTime is set, the supervisor
+	// sets StartFrom to the Unix epoch (time.Unix(0, 0)) so the change feed
+	// returns all available history. If StartTime is also set, StartTime takes
+	// precedence.
 	StartFromBeginning bool
 
 	// StartTime starts processing from a specific point in time.
