@@ -197,12 +197,29 @@ func (p *ChangeFeedProcessor) Stop() error {
 
 // acquireLeases runs one load-balancing cycle: reads all leases, asks the
 // balancer which ones to take, then acquires and starts supervisors for them.
+// It also detects leases we own but have no active supervisor for (e.g., after
+// a supervisor crash) and restarts them.
 func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	allLeases, err := p.leaseStore.getAllLeases(ctx)
 	if err != nil {
 		p.monitor.notifyError(ctx, "", fmt.Errorf("failed to list leases: %w", err))
 		return
 	}
+
+	// Restart supervisors for leases we own but lost due to supervisor crash.
+	p.mu.Lock()
+	for i := range allLeases {
+		lease := &allLeases[i]
+		if lease.Owner == p.instanceName && !lease.isExpired(p.options.LeaseExpirationInterval) {
+			if _, running := p.supervisors[lease.ID]; !running {
+				p.mu.Unlock()
+				p.monitor.notifyLeaseAcquired(ctx, lease.ID)
+				p.startSupervisor(ctx, lease)
+				p.mu.Lock()
+			}
+		}
+	}
+	p.mu.Unlock()
 
 	leasesToTake := p.balancer.selectLeasesToAcquire(allLeases)
 	for i := range leasesToTake {
@@ -238,7 +255,13 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 			delete(p.supervisors, lease.ID)
 			p.mu.Unlock()
 		}()
-		supervisor.run(supervisorCtx)
+
+		if err := supervisor.run(supervisorCtx); err != nil {
+			p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("supervisor exited: %w", err))
+			// Release the lease so the balancer can re-acquire it on the
+			// next cycle instead of thinking we still own it.
+			p.leaseManager.releaseLease(ctx, lease)
+		}
 	}()
 }
 
