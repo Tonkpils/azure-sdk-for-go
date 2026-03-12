@@ -6,7 +6,6 @@ package azcosmos
 import (
 	"context"
 	"fmt"
-	"log"
 )
 
 // changeFeedProcessorSynchronizer detects partition splits/merges and ensures
@@ -16,6 +15,7 @@ type changeFeedProcessorSynchronizer struct {
 	store     *changeFeedProcessorLeaseStore
 	prefix    string
 	mode      ChangeFeedMode
+	monitor   *ChangeFeedProcessorHealthMonitor
 }
 
 // newChangeFeedProcessorSynchronizer creates a synchronizer for the given container and lease store.
@@ -24,12 +24,14 @@ func newChangeFeedProcessorSynchronizer(
 	store *changeFeedProcessorLeaseStore,
 	prefix string,
 	mode ChangeFeedMode,
+	monitor *ChangeFeedProcessorHealthMonitor,
 ) *changeFeedProcessorSynchronizer {
 	return &changeFeedProcessorSynchronizer{
 		container: container,
 		store:     store,
 		prefix:    prefix,
 		mode:      mode,
+		monitor:   monitor,
 	}
 }
 
@@ -104,8 +106,9 @@ func (s *changeFeedProcessorSynchronizer) synchronizeLeases(ctx context.Context)
 	}
 
 	for leaseID := range staleLeases {
+		s.monitor.notifyError(ctx, leaseID, fmt.Errorf("orphaned lease detected, cleaning up"))
 		if err := s.store.deleteLease(ctx, leaseID); err != nil {
-			log.Printf("changefeed synchronizer: failed to delete stale lease %s: %v", leaseID, err)
+			s.monitor.notifyError(ctx, leaseID, fmt.Errorf("failed to delete orphaned lease: %w", err))
 		}
 	}
 
