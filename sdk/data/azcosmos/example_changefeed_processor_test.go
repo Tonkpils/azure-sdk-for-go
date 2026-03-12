@@ -440,3 +440,67 @@ func ExampleContainerClient_GetChangeFeed_pullModel() {
 		}
 	}
 }
+
+// This example shows how to use the ChangeFeedEstimator to monitor processing lag.
+func ExampleChangeFeedEstimator() {
+	// Create clients (see ExampleChangeFeedProcessor for full setup)
+	endpoint := "https://example.documents.azure.com:443/"
+	cred, err := azcosmos.NewKeyCredential("accountKey")
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	client, err := azcosmos.NewClientWithKey(endpoint, cred, nil)
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	monitoredContainer, err := client.NewContainer("mydb", "monitored")
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	leaseContainer, err := client.NewContainer("mydb", "leases")
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	// Create an estimator to monitor a processor group
+	estimator, err := azcosmos.NewChangeFeedEstimator(
+		monitoredContainer,
+		leaseContainer,
+		&azcosmos.ChangeFeedEstimatorOptions{
+			PollInterval: 10 * time.Second,
+			LeasePrefix:  "myProcessorGroup",
+		},
+	)
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	// Option 1: Pull model — get lag on demand
+	ctx := context.TODO()
+	estimations, err := estimator.GetEstimatedLag(ctx)
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+	for _, est := range estimations {
+		fmt.Printf("Partition %s (owner: %s): ~%d items behind\n",
+			est.LeaseToken, est.Owner, est.EstimatedLag)
+	}
+
+	// Option 2: Push model — periodic monitoring
+	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Minute)
+	defer cancel()
+
+	go estimator.Start(ctx, func(ctx context.Context, estimations []azcosmos.ChangeFeedEstimation) {
+		totalLag := 0
+		for _, est := range estimations {
+			totalLag += est.EstimatedLag
+		}
+		fmt.Printf("Total estimated lag: %d items\n", totalLag)
+	})
+
+	// Stop when done
+	estimator.Stop()
+}
