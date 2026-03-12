@@ -64,6 +64,11 @@ type ChangeFeedProcessorOptions struct {
 	// Default: 30 seconds.
 	RequestTimeout time.Duration
 
+	// BalancerStrategy controls lease acquisition behavior during rebalancing.
+	// BalancerStrategyEqual (default) acquires at most one lease per cycle for stability.
+	// BalancerStrategyGreedy acquires up to the target count in a single cycle for faster convergence.
+	BalancerStrategy BalancerStrategy
+
 	// HealthMonitor provides optional callbacks for lease lifecycle events and errors.
 	// If nil, events are logged to the standard logger.
 	HealthMonitor *ChangeFeedProcessorHealthMonitor
