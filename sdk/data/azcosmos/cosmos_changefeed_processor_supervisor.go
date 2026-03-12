@@ -30,6 +30,7 @@ type changeFeedProcessorSupervisor struct {
 	handler   ChangeFeedProcessorHandler
 	options   ChangeFeedProcessorOptions
 	monitor   *ChangeFeedProcessorHealthMonitor
+	throttle  *changeFeedProcessorThrottle
 }
 
 // newChangeFeedProcessorSupervisor creates a supervisor for the given lease.
@@ -40,6 +41,7 @@ func newChangeFeedProcessorSupervisor(
 	handler ChangeFeedProcessorHandler,
 	options ChangeFeedProcessorOptions,
 	monitor *ChangeFeedProcessorHealthMonitor,
+	throttle *changeFeedProcessorThrottle,
 ) *changeFeedProcessorSupervisor {
 	return &changeFeedProcessorSupervisor{
 		lease:     lease,
@@ -48,6 +50,7 @@ func newChangeFeedProcessorSupervisor(
 		handler:   handler,
 		options:   options,
 		monitor:   monitor,
+		throttle:  throttle,
 	}
 }
 
@@ -200,6 +203,13 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 
 	if err := s.checkpoint(ctx, &resp); err != nil {
 		return 0, err
+	}
+
+	// Throttle based on RU consumption if configured.
+	if resp.RequestCharge > 0 {
+		if err := s.throttle.Wait(ctx, float64(resp.RequestCharge)); err != nil {
+			return 0, err
+		}
 	}
 
 	return 0, nil

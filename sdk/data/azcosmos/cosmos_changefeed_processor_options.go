@@ -72,6 +72,11 @@ type ChangeFeedProcessorOptions struct {
 	// HealthMonitor provides optional callbacks for lease lifecycle events and errors.
 	// If nil, events are logged to the standard logger.
 	HealthMonitor *ChangeFeedProcessorHealthMonitor
+
+	// MaxRUPerSecond limits the total request units consumed per second across
+	// all partition supervisors. When set, supervisors will pause between polls
+	// to stay within the RU budget. 0 means unlimited (default).
+	MaxRUPerSecond float64
 }
 
 // changeFeedProcessorDefaults returns options with sensible defaults.
