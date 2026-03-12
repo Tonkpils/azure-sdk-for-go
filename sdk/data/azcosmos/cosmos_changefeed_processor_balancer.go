@@ -5,7 +5,18 @@ package azcosmos
 
 import (
 	"math"
+	"sort"
 	"time"
+)
+
+// BalancerStrategy controls how the processor acquires leases during rebalancing.
+type BalancerStrategy int
+
+const (
+	// BalancerStrategyEqual acquires at most one lease per cycle (conservative, less churn).
+	BalancerStrategyEqual BalancerStrategy = iota
+	// BalancerStrategyGreedy acquires up to the target count in a single cycle (faster convergence).
+	BalancerStrategyGreedy
 )
 
 // changeFeedProcessorBalancer implements an equal-partition load balancing strategy.
@@ -17,15 +28,17 @@ type changeFeedProcessorBalancer struct {
 	expirationInterval time.Duration
 	minPartitionCount  int
 	maxPartitionCount  int
+	strategy           BalancerStrategy
 }
 
 // newChangeFeedProcessorBalancer creates a balancer for the given processor instance.
-func newChangeFeedProcessorBalancer(instanceName string, expirationInterval time.Duration, minPartitionCount, maxPartitionCount int) *changeFeedProcessorBalancer {
+func newChangeFeedProcessorBalancer(instanceName string, expirationInterval time.Duration, minPartitionCount, maxPartitionCount int, strategy BalancerStrategy) *changeFeedProcessorBalancer {
 	return &changeFeedProcessorBalancer{
 		instanceName:       instanceName,
 		expirationInterval: expirationInterval,
 		minPartitionCount:  minPartitionCount,
 		maxPartitionCount:  maxPartitionCount,
+		strategy:           strategy,
 	}
 }
 
@@ -86,7 +99,44 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 		return expiredLeases[:partitionsNeeded]
 	}
 
-	// Step 5: No expired leases — try to steal ONE from the busiest worker.
+	// Step 5: Steal leases from busiest workers.
+	if b.strategy == BalancerStrategyGreedy {
+		// Greedy — steal multiple leases from busiest workers.
+		type workerCount struct {
+			name  string
+			count int
+		}
+		var workers []workerCount
+		for worker, count := range workerToPartitionCount {
+			if worker != b.instanceName {
+				workers = append(workers, workerCount{worker, count})
+			}
+		}
+		sort.Slice(workers, func(i, j int) bool { return workers[i].count > workers[j].count })
+
+		var stolen []changeFeedProcessorLease
+		remaining := partitionsNeeded
+		for _, w := range workers {
+			if remaining <= 0 {
+				break
+			}
+			if w.count <= target {
+				break
+			}
+			for i := range allLeases {
+				if remaining <= 0 {
+					break
+				}
+				if allLeases[i].Owner == w.name {
+					stolen = append(stolen, allLeases[i])
+					remaining--
+				}
+			}
+		}
+		return stolen
+	}
+
+	// Equal — steal at most one lease from the busiest worker.
 	busiestWorker := ""
 	busiestCount := 0
 	for worker, count := range workerToPartitionCount {
@@ -99,8 +149,6 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 		}
 	}
 
-	// Only steal if the busiest worker has more leases than the threshold.
-	// Threshold: target-1 when we need multiple, target when we only need one.
 	stealThreshold := target
 	if partitionsNeeded > 1 {
 		stealThreshold = target - 1
@@ -109,7 +157,6 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 		return nil
 	}
 
-	// Find one lease owned by the busiest worker.
 	for i := range allLeases {
 		if allLeases[i].Owner == busiestWorker {
 			return []changeFeedProcessorLease{allLeases[i]}
