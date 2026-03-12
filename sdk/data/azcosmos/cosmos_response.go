@@ -27,6 +27,9 @@ type Response struct {
 
 func newResponse(resp *http.Response) Response {
 	response := Response{}
+	if resp == nil {
+		return response
+	}
 	response.RawResponse = resp
 	response.RequestCharge = readRequestCharge(resp)
 	response.ActivityID = resp.Header.Get(cosmosHeaderActivityId)

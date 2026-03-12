@@ -27,6 +27,10 @@ type partitionKeyRangeResponse struct {
 // newPartitionKeyRangeResponse creates a new partitionKeyRangeResponse from an HTTP response
 // It will parse the HTTP response and return a list of PartitionKeyRangeProperty objects
 func newPartitionKeyRangeResponse(resp *http.Response) (partitionKeyRangeResponse, error) {
+	if resp == nil {
+		return partitionKeyRangeResponse{}, nil
+	}
+
 	response := partitionKeyRangeResponse{
 		Response: newResponse(resp),
 	}
