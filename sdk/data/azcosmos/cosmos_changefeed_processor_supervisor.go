@@ -66,7 +66,28 @@ var (
 	// errMaxRetriesExceeded signals that the handler failed too many times
 	// in a row, so the orchestrator should release the lease.
 	errMaxRetriesExceeded = errors.New("max handler retries exceeded")
+
+	// errNonRetryable signals a permanent error that should not be retried
+	// (e.g. 401 Unauthorized, 400 Bad Request, 404 Not Found, 403 Forbidden).
+	errNonRetryable = errors.New("non-retryable error")
 )
+
+// isNonRetryableStatusCode returns true for HTTP status codes that indicate
+// a permanent error. Aligned with .NET and Java SDK behavior.
+func isNonRetryableStatusCode(statusCode int) bool {
+	switch statusCode {
+	case http.StatusUnauthorized,       // 401 - auth failure
+		http.StatusBadRequest,          // 400 - client error
+		http.StatusNotFound,            // 404 - resource not found
+		http.StatusForbidden,           // 403 - permission denied
+		http.StatusMethodNotAllowed,    // 405
+		http.StatusConflict,            // 409
+		http.StatusRequestEntityTooLarge: // 413
+		return true
+	default:
+		return false
+	}
+}
 
 // run starts the poller and renewer goroutines. The first error from either
 // goroutine cancels both and is returned to the caller.
@@ -112,14 +133,16 @@ func (s *changeFeedProcessorSupervisor) renewLoop(ctx context.Context) error {
 
 // pollLoop reads the change feed in a loop with exponential backoff on
 // handler errors and Retry-After awareness for 429 responses.
+// Retry limits are aligned with .NET and Java SDKs (9 retries, 30s max wait for throttling).
 func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 	consecutiveFailures := 0
-	maxRetries := 10
+	maxRetries := 9 // aligned with .NET/Java: 9 retries (10 total attempts)
 
 	for {
 		delay, err := s.poll(ctx)
 		if err != nil {
-			if errors.Is(err, errPartitionGone) || errors.Is(err, errLeaseLost) {
+			// Fatal errors — exit immediately, no retry.
+			if errors.Is(err, errPartitionGone) || errors.Is(err, errLeaseLost) || errors.Is(err, errNonRetryable) {
 				return err
 			}
 			consecutiveFailures++
@@ -150,6 +173,12 @@ func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 // poll executes a single change feed read, dispatches documents to the handler,
 // and checkpoints the lease on success. It returns a suggested delay (non-zero
 // only for 429 throttling) and an error for fatal conditions.
+//
+// Error classification (aligned with .NET/Java SDKs):
+//   - 410 Gone: partition split/merge → errPartitionGone (fatal, orchestrator re-syncs)
+//   - 429 Too Many Requests: throttled → returns Retry-After delay, nil error (retryable)
+//   - 401, 400, 403, 404, etc.: non-retryable → errNonRetryable (fatal, no retry)
+//   - 503, 408, 500, network errors: transient → returns error (pollLoop retries with backoff)
 func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration, error) {
 	opts := s.buildChangeFeedOptions()
 
@@ -165,9 +194,12 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 	if err != nil {
 		var responseErr *azcore.ResponseError
 		if errors.As(err, &responseErr) {
+			// 410 Gone — partition split or merge. Stop and let orchestrator re-sync.
 			if responseErr.StatusCode == http.StatusGone {
 				return 0, errPartitionGone
 			}
+
+			// 429 Too Many Requests — respect Retry-After, not counted as failure.
 			if responseErr.StatusCode == http.StatusTooManyRequests {
 				retryAfter := 5 * time.Second
 				if responseErr.RawResponse != nil {
@@ -177,9 +209,21 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 						}
 					}
 				}
+				// Cap at 30s per .NET/Java SDK defaults.
+				if retryAfter > 30*time.Second {
+					retryAfter = 30 * time.Second
+				}
 				return retryAfter, nil
 			}
+
+			// Non-retryable errors — fail fast, don't waste retry budget.
+			if isNonRetryableStatusCode(responseErr.StatusCode) {
+				s.monitor.notifyError(ctx, s.lease.ID, fmt.Errorf("non-retryable error (HTTP %d): %w", responseErr.StatusCode, err))
+				return 0, fmt.Errorf("%w: HTTP %d: %s", errNonRetryable, responseErr.StatusCode, responseErr.ErrorCode)
+			}
 		}
+
+		// Transient / unknown errors — let pollLoop retry with backoff.
 		cfErr := fmt.Errorf("change feed read error: %w", err)
 		s.monitor.notifyError(ctx, s.lease.ID, cfErr)
 		return 0, cfErr
