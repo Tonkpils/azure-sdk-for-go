@@ -40,6 +40,7 @@ type ChangeFeedProcessor struct {
 	handler            ChangeFeedProcessorHandler
 	options            ChangeFeedProcessorOptions
 	monitor            *ChangeFeedProcessorHealthMonitor
+	throttle           *changeFeedProcessorThrottle
 
 	leaseStore   *changeFeedProcessorLeaseStore
 	leaseManager *changeFeedProcessorLeaseManager
@@ -101,6 +102,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		opts.MaxPartitionCount = options.MaxPartitionCount
 		opts.BalancerStrategy = options.BalancerStrategy
 		opts.HealthMonitor = options.HealthMonitor
+		opts.MaxRUPerSecond = options.MaxRUPerSecond
 	}
 
 	instanceName, err := generateInstanceName()
@@ -112,6 +114,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
 	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode, opts.HealthMonitor)
 	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount, opts.BalancerStrategy)
+	throttle := newChangeFeedProcessorThrottle(opts.MaxRUPerSecond)
 
 	return &ChangeFeedProcessor{
 		processorName:      processorName,
@@ -120,6 +123,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		handler:            handler,
 		options:            opts,
 		monitor:            opts.HealthMonitor,
+		throttle:           throttle,
 		leaseStore:         leaseStore,
 		leaseManager:       leaseManager,
 		synchronizer:       synchronizer,
@@ -274,7 +278,7 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 	p.supervisors[lease.ID] = supervisorCancel
 
 	supervisor := newChangeFeedProcessorSupervisor(
-		lease, p.monitoredContainer, p.leaseStore, p.handler, p.options, p.monitor,
+		lease, p.monitoredContainer, p.leaseStore, p.handler, p.options, p.monitor, p.throttle,
 	)
 	go func() {
 		defer func() {
