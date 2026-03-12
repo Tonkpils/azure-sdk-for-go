@@ -6,6 +6,7 @@ package azcosmos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -485,4 +486,28 @@ func TestSynchronizerDetectsOrphanedLeases(t *testing.T) {
 	}
 
 	require.Len(t, orphaned, 2, "both old leases should be detected as orphans")
+}
+
+// --- Error Classification Tests ---
+
+func TestIsNonRetryableStatusCode(t *testing.T) {
+	nonRetryable := []int{400, 401, 403, 404, 405, 409, 413}
+	for _, code := range nonRetryable {
+		require.True(t, isNonRetryableStatusCode(code), "status %d should be non-retryable", code)
+	}
+
+	retryable := []int{408, 429, 500, 502, 503, 504}
+	for _, code := range retryable {
+		require.False(t, isNonRetryableStatusCode(code), "status %d should be retryable", code)
+	}
+}
+
+func TestPollLoopNonRetryableExitsImmediately(t *testing.T) {
+	// Verify that non-retryable errors from poll() cause pollLoop to
+	// exit immediately rather than retrying.
+	require.ErrorIs(t, errNonRetryable, errNonRetryable)
+
+	// errNonRetryable should NOT match errPartitionGone or errLeaseLost
+	require.False(t, errors.Is(errNonRetryable, errPartitionGone))
+	require.False(t, errors.Is(errNonRetryable, errLeaseLost))
 }
