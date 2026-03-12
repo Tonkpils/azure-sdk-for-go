@@ -99,6 +99,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		opts.Mode = options.Mode
 		opts.MinPartitionCount = options.MinPartitionCount
 		opts.MaxPartitionCount = options.MaxPartitionCount
+		opts.BalancerStrategy = options.BalancerStrategy
 		opts.HealthMonitor = options.HealthMonitor
 	}
 
@@ -109,8 +110,8 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 
 	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix)
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
-	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode)
-	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount)
+	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode, opts.HealthMonitor)
+	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount, opts.BalancerStrategy)
 
 	return &ChangeFeedProcessor{
 		processorName:      processorName,
@@ -193,6 +194,32 @@ func (p *ChangeFeedProcessor) Stop() error {
 	}
 
 	return nil
+}
+
+// GetCurrentState returns the current state of all leases in the processor group.
+// This provides operational visibility into which instances own which partitions,
+// their checkpoint positions, and whether any leases have expired.
+//
+// This method can be called whether or not the processor is running.
+func (p *ChangeFeedProcessor) GetCurrentState(ctx context.Context) ([]ChangeFeedProcessorState, error) {
+	leases, err := p.leaseStore.getAllLeases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read leases: %w", err)
+	}
+
+	states := make([]ChangeFeedProcessorState, len(leases))
+	for i, lease := range leases {
+		states[i] = ChangeFeedProcessorState{
+			LeaseToken:        lease.ID,
+			Owner:             lease.Owner,
+			ContinuationToken: lease.ContinuationToken,
+			FeedRange:         lease.FeedRange,
+			LastUpdated:       time.Unix(lease.Timestamp, 0),
+			IsExpired:         lease.isExpired(p.options.LeaseExpirationInterval),
+		}
+	}
+
+	return states, nil
 }
 
 // acquireLeases runs one load-balancing cycle: reads all leases, asks the

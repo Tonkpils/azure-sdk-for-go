@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // --- helpers ---
@@ -154,7 +156,7 @@ func TestLeaseJSONRoundTrip(t *testing.T) {
 // --- Balancer Tests ---
 
 func TestBalancerNoLeases(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	result := b.selectLeasesToAcquire(nil)
 	if result != nil {
 		t.Errorf("expected nil for empty lease list, got %v", result)
@@ -167,7 +169,7 @@ func TestBalancerNoLeases(t *testing.T) {
 }
 
 func TestBalancerAllExpired(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	expired := time.Now().Add(-120 * time.Second).Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -184,7 +186,7 @@ func TestBalancerAllExpired(t *testing.T) {
 }
 
 func TestBalancerEvenDistribution(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("new-worker", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("new-worker", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -209,7 +211,7 @@ func TestBalancerEvenDistribution(t *testing.T) {
 }
 
 func TestBalancerAlreadyBalanced(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-A", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("worker-A", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -227,7 +229,7 @@ func TestBalancerAlreadyBalanced(t *testing.T) {
 }
 
 func TestBalancerStealFromBusiest(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -249,7 +251,7 @@ func TestBalancerStealFromBusiest(t *testing.T) {
 }
 
 func TestBalancerNewWorkerJoining(t *testing.T) {
-	b := newChangeFeedProcessorBalancer("worker-C", 60*time.Second, 0, 0)
+	b := newChangeFeedProcessorBalancer("worker-C", 60*time.Second, 0, 0, BalancerStrategyEqual)
 	now := time.Now().Unix()
 
 	leases := []changeFeedProcessorLease{
@@ -268,6 +270,88 @@ func TestBalancerNewWorkerJoining(t *testing.T) {
 	if len(result) != 1 {
 		t.Errorf("expected 1 stolen lease, got %d", len(result))
 	}
+}
+
+// --- Greedy Balancer Tests ---
+
+func TestBalancerGreedyAcquiresMultipleExpiredLeases(t *testing.T) {
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 0, BalancerStrategyGreedy)
+	expired := time.Now().Add(-120 * time.Second).Unix()
+	now := time.Now().Unix()
+
+	leases := []changeFeedProcessorLease{
+		newTestLease("worker-2", newTestFeedRange("", "2A"), now),
+		newTestLease("worker-2", newTestFeedRange("2A", "55"), now),
+		newTestLease("worker-2", newTestFeedRange("55", "7F"), now),
+		newTestLease("dead", newTestFeedRange("7F", "99"), expired),
+		newTestLease("dead", newTestFeedRange("99", "BB"), expired),
+		newTestLease("dead", newTestFeedRange("BB", "FF"), expired),
+	}
+
+	result := b.selectLeasesToAcquire(leases)
+	// 6 leases, 2 active workers → target = ceil(6/2) = 3.
+	// worker-1 has 0, needs 3. 3 expired leases available → greedy takes all 3.
+	require.Len(t, result, 3)
+}
+
+func TestBalancerGreedyStealsMultipleFromBusiest(t *testing.T) {
+	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second, 0, 0, BalancerStrategyGreedy)
+	now := time.Now().Unix()
+
+	leases := []changeFeedProcessorLease{
+		newTestLease("worker-A", newTestFeedRange("", "20"), now),
+		newTestLease("worker-A", newTestFeedRange("20", "40"), now),
+		newTestLease("worker-A", newTestFeedRange("40", "60"), now),
+		newTestLease("worker-A", newTestFeedRange("60", "80"), now),
+		newTestLease("worker-A", newTestFeedRange("80", "FF"), now),
+	}
+
+	result := b.selectLeasesToAcquire(leases)
+	// 5 leases, 2 workers → target = ceil(5/2) = 3.
+	// worker-B has 0, needs 3. No expired leases.
+	// Greedy steals 3 from worker-A (who has 5 > target 3).
+	require.Len(t, result, 3)
+	for _, l := range result {
+		require.Equal(t, "worker-A", l.Owner)
+	}
+}
+
+func TestBalancerGreedyRespectsMaxPartitionCount(t *testing.T) {
+	b := newChangeFeedProcessorBalancer("worker-1", 60*time.Second, 0, 2, BalancerStrategyGreedy)
+	expired := time.Now().Add(-120 * time.Second).Unix()
+
+	leases := []changeFeedProcessorLease{
+		newTestLease("dead", newTestFeedRange("", "20"), expired),
+		newTestLease("dead", newTestFeedRange("20", "40"), expired),
+		newTestLease("dead", newTestFeedRange("40", "60"), expired),
+		newTestLease("dead", newTestFeedRange("60", "80"), expired),
+		newTestLease("dead", newTestFeedRange("80", "FF"), expired),
+	}
+
+	result := b.selectLeasesToAcquire(leases)
+	// 5 leases, 1 worker → target = ceil(5/1) = 5, clamped to maxPartitionCount = 2.
+	// worker-1 has 0, needs 2. 5 expired available → takes only 2.
+	require.Len(t, result, 2)
+}
+
+func TestBalancerEqualStillStealsOneAtATime(t *testing.T) {
+	b := newChangeFeedProcessorBalancer("worker-B", 60*time.Second, 0, 0, BalancerStrategyEqual)
+	now := time.Now().Unix()
+
+	leases := []changeFeedProcessorLease{
+		newTestLease("worker-A", newTestFeedRange("", "20"), now),
+		newTestLease("worker-A", newTestFeedRange("20", "40"), now),
+		newTestLease("worker-A", newTestFeedRange("40", "60"), now),
+		newTestLease("worker-A", newTestFeedRange("60", "80"), now),
+		newTestLease("worker-A", newTestFeedRange("80", "FF"), now),
+	}
+
+	result := b.selectLeasesToAcquire(leases)
+	// 5 leases, 2 workers → target = ceil(5/2) = 3.
+	// worker-B has 0, needs 3. No expired leases.
+	// Equal strategy steals exactly 1 from worker-A.
+	require.Len(t, result, 1)
+	require.Equal(t, "worker-A", result[0].Owner)
 }
 
 // --- Options Tests ---
@@ -338,4 +422,67 @@ func TestNewChangeFeedProcessorValidation(t *testing.T) {
 			t.Fatal("expected error for nil handler")
 		}
 	})
+}
+
+func TestChangeFeedProcessorState(t *testing.T) {
+	now := time.Now()
+	lease := changeFeedProcessorLease{
+		ID:                "lease-1",
+		Owner:             "worker-1",
+		ContinuationToken: "token-abc",
+		FeedRange:         &FeedRange{MinInclusive: "00", MaxExclusive: "FF"},
+		Timestamp:         now.Unix(),
+	}
+
+	state := ChangeFeedProcessorState{
+		LeaseToken:        lease.ID,
+		Owner:             lease.Owner,
+		ContinuationToken: lease.ContinuationToken,
+		FeedRange:         lease.FeedRange,
+		LastUpdated:       time.Unix(lease.Timestamp, 0),
+		IsExpired:         lease.isExpired(60 * time.Second),
+	}
+
+	require.Equal(t, "lease-1", state.LeaseToken)
+	require.Equal(t, "worker-1", state.Owner)
+	require.Equal(t, "token-abc", state.ContinuationToken)
+	require.Equal(t, "00", state.FeedRange.MinInclusive)
+	require.Equal(t, "FF", state.FeedRange.MaxExclusive)
+	require.False(t, state.IsExpired)
+
+	// Test expired lease
+	oldLease := lease
+	oldLease.Timestamp = now.Add(-2 * time.Minute).Unix()
+	require.True(t, oldLease.isExpired(60*time.Second))
+}
+
+func TestSynchronizerDetectsOrphanedLeases(t *testing.T) {
+	// Simulate: we have leases for ranges [00-7F] and [7F-FF],
+	// but the current feed ranges only have [00-FF] (merged).
+	// The old [00-7F] and [7F-FF] leases should be detected as orphans.
+
+	oldLeases := []changeFeedProcessorLease{
+		newTestLease("worker-1", newTestFeedRange("00", "7F"), time.Now().Unix()),
+		newTestLease("worker-2", newTestFeedRange("7F", "FF"), time.Now().Unix()),
+	}
+
+	newRanges := []FeedRange{
+		newTestFeedRange("00", "FF"),
+	}
+
+	// Build the currentRangeIDs set
+	currentRangeIDs := make(map[string]struct{}, len(newRanges))
+	for _, fr := range newRanges {
+		currentRangeIDs[leaseIDFromFeedRange(fr, "")] = struct{}{}
+	}
+
+	// Check which old leases are orphaned
+	var orphaned []string
+	for _, lease := range oldLeases {
+		if _, stillExists := currentRangeIDs[lease.ID]; !stillExists {
+			orphaned = append(orphaned, lease.ID)
+		}
+	}
+
+	require.Len(t, orphaned, 2, "both old leases should be detected as orphans")
 }
