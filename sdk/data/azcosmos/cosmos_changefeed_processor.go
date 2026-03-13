@@ -296,6 +296,7 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 			// Release the lease so the balancer can re-acquire it on the
 			// next cycle instead of thinking we still own it.
 			p.leaseManager.releaseLease(ctx, lease)
+			p.monitor.notifyLeaseReleased(ctx, lease.ID)
 		}
 	}()
 }
