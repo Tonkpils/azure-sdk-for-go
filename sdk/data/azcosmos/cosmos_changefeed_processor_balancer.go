@@ -5,6 +5,7 @@ package azcosmos
 
 import (
 	"math"
+	"math/rand"
 	"sort"
 	"time"
 )
@@ -92,7 +93,12 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 	}
 
 	// Step 4: Take from expired leases first.
+	// Shuffle to reduce collisions when multiple instances target the same
+	// expired leases simultaneously (same approach as Java SDK).
 	if len(expiredLeases) > 0 {
+		rand.Shuffle(len(expiredLeases), func(i, j int) {
+			expiredLeases[i], expiredLeases[j] = expiredLeases[j], expiredLeases[i]
+		})
 		if partitionsNeeded > len(expiredLeases) {
 			partitionsNeeded = len(expiredLeases)
 		}
