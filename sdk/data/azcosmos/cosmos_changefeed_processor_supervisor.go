@@ -63,10 +63,6 @@ var (
 	// The supervisor must stop immediately.
 	errLeaseLost = errors.New("lease lost (another instance took ownership)")
 
-	// errMaxRetriesExceeded signals that the handler failed too many times
-	// in a row, so the orchestrator should release the lease.
-	errMaxRetriesExceeded = errors.New("max handler retries exceeded")
-
 	// errNonRetryable signals a permanent error that should not be retried
 	// (e.g. 401 Unauthorized, 400 Bad Request, 404 Not Found, 403 Forbidden).
 	errNonRetryable = errors.New("non-retryable error")
@@ -132,11 +128,15 @@ func (s *changeFeedProcessorSupervisor) renewLoop(ctx context.Context) error {
 }
 
 // pollLoop reads the change feed in a loop with exponential backoff on
-// handler errors and Retry-After awareness for 429 responses.
-// Retry limits are aligned with .NET and Java SDKs (9 retries, 30s max wait for throttling).
+// transient errors and Retry-After awareness for 429 responses.
+//
+// Matching .NET SDK behavior: the loop runs indefinitely until cancelled or a
+// fatal error occurs. Non-retryable errors (401, 403, 404) and structural
+// errors (partition gone, lease lost) exit immediately. Transient errors
+// (503, timeouts, network blips) retry with capped exponential backoff.
+// The backoff resets on any successful poll.
 func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 	consecutiveFailures := 0
-	maxRetries := 9 // aligned with .NET/Java: 9 retries (10 total attempts)
 
 	for {
 		delay, err := s.poll(ctx)
@@ -146,10 +146,7 @@ func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 				return err
 			}
 			consecutiveFailures++
-			if consecutiveFailures >= maxRetries {
-				return fmt.Errorf("%w: lease %s failed %d times", errMaxRetriesExceeded, s.lease.ID, consecutiveFailures)
-			}
-			backoff := s.options.PollInterval * time.Duration(1<<uint(consecutiveFailures))
+			backoff := s.options.PollInterval * time.Duration(1<<uint(min(consecutiveFailures, 6)))
 			if backoff > 60*time.Second {
 				backoff = 60 * time.Second
 			}
