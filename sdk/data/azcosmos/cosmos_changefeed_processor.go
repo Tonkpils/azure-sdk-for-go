@@ -292,20 +292,33 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 		}()
 
 		if err := supervisor.run(supervisorCtx); err != nil {
-			// If partition gone, persist the last continuation token on the
-			// lease so the synchronizer can pass it to child leases.
-			if token, ok := isPartitionGone(err); ok && token != "" {
-				lease.ContinuationToken = token
-				_ = p.leaseStore.updateLease(ctx, lease)
+			// Determine close reason from the error type.
+			reason := LeaseCloseReasonUnknown
+			if _, ok := isPartitionGone(err); ok {
+				reason = LeaseCloseReasonPartitionGone
+				// Persist the last continuation token so the synchronizer
+				// can pass it to child leases during splits.
+				if token, _ := isPartitionGone(err); token != "" {
+					lease.ContinuationToken = token
+					_ = p.leaseStore.updateLease(ctx, lease)
+				}
+			} else if errors.Is(err, errLeaseLost) {
+				reason = LeaseCloseReasonLeaseLost
+			} else if errors.Is(err, errHandlerFailed) {
+				reason = LeaseCloseReasonObserverError
+			} else if errors.Is(err, errNonRetryable) {
+				reason = LeaseCloseReasonNonRetryableError
+			} else if errors.Is(err, context.Canceled) {
+				reason = LeaseCloseReasonShutdown
 			}
 
-			if !errors.Is(err, context.Canceled) {
+			if reason != LeaseCloseReasonShutdown {
 				p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("supervisor exited: %w", err))
 			}
 			// Release the lease so the balancer can re-acquire it on the
 			// next cycle instead of thinking we still own it.
 			p.leaseManager.releaseLease(ctx, lease)
-			p.monitor.notifyLeaseReleased(ctx, lease.ID)
+			p.monitor.notifyLeaseClosed(ctx, lease.ID, reason)
 		}
 	}()
 }
@@ -363,7 +376,7 @@ func (p *ChangeFeedProcessor) releaseAllLeases() {
 	for i := range allLeases {
 		if allLeases[i].Owner == p.instanceName {
 			_ = p.leaseManager.releaseLease(ctx, &allLeases[i])
-			p.monitor.notifyLeaseReleased(ctx, allLeases[i].ID)
+			p.monitor.notifyLeaseClosed(ctx, allLeases[i].ID, LeaseCloseReasonShutdown)
 		}
 	}
 }

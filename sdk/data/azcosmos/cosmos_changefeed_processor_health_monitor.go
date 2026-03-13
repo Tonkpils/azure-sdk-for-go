@@ -8,6 +8,25 @@ import (
 	"fmt"
 )
 
+// LeaseCloseReason describes why a lease was released.
+// Matches .NET SDK's ChangeFeedObserverCloseReason enum.
+type LeaseCloseReason int
+
+const (
+	// LeaseCloseReasonShutdown indicates the processor is shutting down gracefully.
+	LeaseCloseReasonShutdown LeaseCloseReason = iota
+	// LeaseCloseReasonLeaseLost indicates another instance took ownership of the lease.
+	LeaseCloseReasonLeaseLost
+	// LeaseCloseReasonPartitionGone indicates the partition was split or merged.
+	LeaseCloseReasonPartitionGone
+	// LeaseCloseReasonObserverError indicates the user's handler returned an error.
+	LeaseCloseReasonObserverError
+	// LeaseCloseReasonNonRetryableError indicates a non-retryable HTTP error (401, 403, etc.).
+	LeaseCloseReasonNonRetryableError
+	// LeaseCloseReasonUnknown indicates an unexpected error.
+	LeaseCloseReasonUnknown
+)
+
 // ChangeFeedProcessorHealthMonitor provides hooks into the processor lifecycle
 // for observability and error reporting. All methods are optional — implement
 // only the ones you need. Nil implementations are safe and ignored.
@@ -28,6 +47,12 @@ type ChangeFeedProcessorHealthMonitor struct {
 
 	// OnLeaseReleased is called when this instance releases a lease (shutdown or rebalance).
 	OnLeaseReleased func(ctx context.Context, leaseID string)
+
+	// OnLeaseClosed is called when a supervisor stops processing a lease, with a
+	// typed reason. This matches .NET's observer.CloseAsync(leaseToken, closeReason)
+	// pattern and fires on every exit path (shutdown, error, partition gone, etc.).
+	// If both OnLeaseClosed and OnLeaseReleased are set, both are called.
+	OnLeaseClosed func(ctx context.Context, leaseID string, reason LeaseCloseReason)
 
 	// OnError is called for all errors (catch-all). Always called regardless of
 	// whether a more specific callback (OnLeaseContention, OnProcessingError) is set.
@@ -61,6 +86,20 @@ func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseAcquired(ctx context.Conte
 // notifyLeaseReleased calls OnLeaseReleased if the monitor and callback are non-nil.
 func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseReleased(ctx context.Context, leaseID string) {
 	if m != nil && m.OnLeaseReleased != nil {
+		m.OnLeaseReleased(ctx, leaseID)
+	}
+}
+
+// notifyLeaseClosed calls OnLeaseClosed with the given reason, then calls
+// OnLeaseReleased for backward compatibility.
+func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseClosed(ctx context.Context, leaseID string, reason LeaseCloseReason) {
+	if m == nil {
+		return
+	}
+	if m.OnLeaseClosed != nil {
+		m.OnLeaseClosed(ctx, leaseID, reason)
+	}
+	if m.OnLeaseReleased != nil {
 		m.OnLeaseReleased(ctx, leaseID)
 	}
 }
