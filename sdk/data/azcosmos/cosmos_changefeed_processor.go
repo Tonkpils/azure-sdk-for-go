@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -162,10 +163,8 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 	// 3. Start lease renewal goroutine
 	go p.renewLoop(ctx)
 
-	// 4. Main acquisition loop
-	acquireTicker := time.NewTicker(p.options.LeaseAcquireInterval)
-	defer acquireTicker.Stop()
-
+	// 4. Main acquisition loop — uses jittered interval to reduce 412
+	// collisions when multiple instances start with the same configuration.
 	for {
 		// Re-synchronize on every cycle to pick up partition splits/merges.
 		if err := p.synchronizer.synchronizeLeases(ctx); err != nil {
@@ -174,11 +173,12 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 
 		p.acquireLeases(ctx)
 
+		jittered := jitteredInterval(p.options.LeaseAcquireInterval)
 		select {
 		case <-ctx.Done():
 			p.releaseAllLeases()
 			return nil
-		case <-acquireTicker.C:
+		case <-time.After(jittered):
 		}
 	}
 }
@@ -361,4 +361,13 @@ func generateInstanceName() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s-%s", host, id), nil
+}
+
+// jitteredInterval returns the given interval with ±30% random jitter applied.
+// This spreads out acquire cycles across instances that started with the same
+// configuration, reducing 412 contention on lease writes.
+func jitteredInterval(base time.Duration) time.Duration {
+	// jitter in range [-0.3, +0.3]
+	jitter := (rand.Float64()*0.6 - 0.3) * float64(base)
+	return base + time.Duration(jitter)
 }
