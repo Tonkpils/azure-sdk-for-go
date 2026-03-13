@@ -292,7 +292,16 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 		}()
 
 		if err := supervisor.run(supervisorCtx); err != nil {
-			p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("supervisor exited: %w", err))
+			// If partition gone, persist the last continuation token on the
+			// lease so the synchronizer can pass it to child leases.
+			if token, ok := isPartitionGone(err); ok && token != "" {
+				lease.ContinuationToken = token
+				_ = p.leaseStore.updateLease(ctx, lease)
+			}
+
+			if !errors.Is(err, context.Canceled) {
+				p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("supervisor exited: %w", err))
+			}
 			// Release the lease so the balancer can re-acquire it on the
 			// next cycle instead of thinking we still own it.
 			p.leaseManager.releaseLease(ctx, lease)

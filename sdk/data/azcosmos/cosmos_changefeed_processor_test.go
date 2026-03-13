@@ -507,7 +507,16 @@ func TestPollLoopNonRetryableExitsImmediately(t *testing.T) {
 	// exit immediately rather than retrying.
 	require.ErrorIs(t, errNonRetryable, errNonRetryable)
 
-	// errNonRetryable should NOT match errPartitionGone or errLeaseLost
-	require.False(t, errors.Is(errNonRetryable, errPartitionGone))
+	// errNonRetryable should NOT match errLeaseLost
 	require.False(t, errors.Is(errNonRetryable, errLeaseLost))
+
+	// partitionGoneError should be detectable via isPartitionGone
+	pge := &partitionGoneError{continuationToken: "tok123"}
+	token, ok := isPartitionGone(pge)
+	require.True(t, ok)
+	require.Equal(t, "tok123", token)
+
+	// errHandlerFailed should not match other sentinels
+	require.False(t, errors.Is(errHandlerFailed, errLeaseLost))
+	require.False(t, errors.Is(errHandlerFailed, errNonRetryable))
 }
