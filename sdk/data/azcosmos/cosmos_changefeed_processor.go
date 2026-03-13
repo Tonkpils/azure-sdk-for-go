@@ -331,6 +331,11 @@ func (p *ChangeFeedProcessor) renewOwnedLeases(ctx context.Context) {
 }
 
 // releaseAllLeases cancels all supervisors and releases owned leases during shutdown.
+// This deliberately queries Cosmos for ALL leases matching our instance name rather
+// than relying on the in-memory supervisors map. This handles the case where a
+// supervisor exited early (crash, errNonRetryable, etc.) and removed itself from
+// the map — the lease in Cosmos still shows our instance as owner and must be released
+// so other instances can acquire it immediately instead of waiting for expiration.
 func (p *ChangeFeedProcessor) releaseAllLeases() {
 	p.mu.Lock()
 	for _, cancel := range p.supervisors {
