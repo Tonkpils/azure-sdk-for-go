@@ -49,6 +49,7 @@ type ChangeFeedProcessor struct {
 	balancer     *changeFeedProcessorBalancer
 	supervisors  map[string]context.CancelFunc // leaseID → cancel function
 	mu           sync.Mutex                    // protects supervisors map
+	wg           sync.WaitGroup                // tracks running supervisor goroutines
 
 	cancelFunc context.CancelFunc
 	done       chan struct{}
@@ -284,7 +285,9 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 	supervisor := newChangeFeedProcessorSupervisor(
 		lease, p.monitoredContainer, p.leaseStore, p.handler, p.options, p.monitor, p.throttle,
 	)
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
 		defer func() {
 			p.mu.Lock()
 			delete(p.supervisors, lease.ID)
@@ -365,6 +368,10 @@ func (p *ChangeFeedProcessor) releaseAllLeases() {
 		cancel()
 	}
 	p.mu.Unlock()
+
+	// Wait for all supervisor goroutines to finish before releasing leases.
+	// This matches .NET's Task.WhenAll pattern in ShutdownAsync.
+	p.wg.Wait()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
