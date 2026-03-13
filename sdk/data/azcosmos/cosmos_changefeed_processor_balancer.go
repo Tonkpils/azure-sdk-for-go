@@ -143,6 +143,10 @@ func (b *changeFeedProcessorBalancer) selectLeasesToAcquire(allLeases []changeFe
 	}
 
 	// Equal — steal at most one lease from the busiest worker.
+	// The threshold logic matches .NET SDK's EqualPartitionsBalancingStrategy:
+	//   if (workerToStealFrom.Value > target - (partitionsNeededForMe > 1 ? 1 : 0))
+	// When partitionsNeeded == 1, steal only if busiest > target (dead zone of 1).
+	// When partitionsNeeded > 1, steal if busiest >= target.
 	busiestWorker := ""
 	busiestCount := 0
 	for worker, count := range workerToPartitionCount {
