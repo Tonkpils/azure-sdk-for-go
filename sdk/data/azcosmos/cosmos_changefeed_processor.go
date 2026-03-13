@@ -164,7 +164,12 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 	// 3. Start lease renewal goroutine
 	go p.renewLoop(ctx)
 
-	// 4. Main acquisition loop — uses jittered interval to reduce 412
+	// 4. Eagerly start supervisors for leases we already own (e.g. after a
+	// restart). Matches .NET's LoadLeasesAsync which starts processing
+	// owned leases immediately rather than waiting for the first acquire cycle.
+	p.loadOwnedLeases(ctx)
+
+	// 5. Main acquisition loop — uses jittered interval to reduce 412
 	// collisions when multiple instances start with the same configuration.
 	for {
 		// Re-synchronize on every cycle to pick up partition splits/merges.
@@ -239,19 +244,7 @@ func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	}
 
 	// Restart supervisors for leases we own but lost due to supervisor crash.
-	p.mu.Lock()
-	for i := range allLeases {
-		lease := &allLeases[i]
-		if lease.Owner == p.instanceName && !lease.isExpired(p.options.LeaseExpirationInterval) {
-			if _, running := p.supervisors[lease.ID]; !running {
-				p.mu.Unlock()
-				p.monitor.notifyLeaseAcquired(ctx, lease.ID)
-				p.startSupervisor(ctx, lease)
-				p.mu.Lock()
-			}
-		}
-	}
-	p.mu.Unlock()
+	p.startSupervisorsForOwnedLeases(ctx, allLeases)
 
 	leasesToTake := p.balancer.selectLeasesToAcquire(allLeases)
 	for i := range leasesToTake {
@@ -269,6 +262,36 @@ func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	}
 }
 
+// loadOwnedLeases reads all leases and immediately starts supervisors for
+// leases this instance already owns. Called once on startup before the main
+// acquire loop so processing resumes immediately after a restart.
+func (p *ChangeFeedProcessor) loadOwnedLeases(ctx context.Context) {
+	allLeases, err := p.leaseStore.getAllLeases(ctx)
+	if err != nil {
+		p.monitor.notifyError(ctx, "", fmt.Errorf("failed to load owned leases on startup: %w", err))
+		return
+	}
+	p.startSupervisorsForOwnedLeases(ctx, allLeases)
+}
+
+// startSupervisorsForOwnedLeases starts supervisors for any leases this
+// instance owns but doesn't have a running supervisor for.
+func (p *ChangeFeedProcessor) startSupervisorsForOwnedLeases(ctx context.Context, allLeases []changeFeedProcessorLease) {
+	p.mu.Lock()
+	for i := range allLeases {
+		lease := &allLeases[i]
+		if lease.Owner == p.instanceName && !lease.isExpired(p.options.LeaseExpirationInterval) {
+			if _, running := p.supervisors[lease.ID]; !running {
+				p.mu.Unlock()
+				p.monitor.notifyLeaseAcquired(ctx, lease.ID)
+				p.startSupervisor(ctx, lease)
+				p.mu.Lock()
+			}
+		}
+	}
+	p.mu.Unlock()
+}
+
 // startSupervisor launches a goroutine that polls the change feed for a
 // newly acquired lease. No-op if a supervisor is already running for it.
 func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *changeFeedProcessorLease) {
@@ -278,7 +301,6 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 	if _, exists := p.supervisors[lease.ID]; exists {
 		return
 	}
-
 	supervisorCtx, supervisorCancel := context.WithCancel(ctx)
 	p.supervisors[lease.ID] = supervisorCancel
 
@@ -315,8 +337,13 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 				reason = LeaseCloseReasonShutdown
 			}
 
-			if reason != LeaseCloseReasonShutdown {
+			if reason != LeaseCloseReasonShutdown && reason != LeaseCloseReasonLeaseLost {
 				p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("supervisor exited: %w", err))
+			}
+			if reason == LeaseCloseReasonLeaseLost {
+				// Expected rebalancing — use contention notification, not error.
+				// Matches .NET: bare LeaseLostException is not reported to the monitor.
+				p.monitor.notifyLeaseContention(ctx, lease.ID)
 			}
 			// Release the lease so the balancer can re-acquire it on the
 			// next cycle instead of thinking we still own it.
