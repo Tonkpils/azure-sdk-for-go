@@ -824,6 +824,63 @@ func TestContainerReadPartitionKeyRangesEmpty(t *testing.T) {
 	}
 }
 
+func TestContainerReadPartitionKeyRangesServerError(t *testing.T) {
+	// This test verifies that getPartitionKeyRanges properly returns an error
+	// when the server responds with a non-200 status code, rather than passing
+	// a nil response to newPartitionKeyRangeResponse (which would panic).
+	errorBody := `{"code":"InternalServerError","message":"service unavailable"}`
+
+	srv, close := mock.NewTLSServer()
+	defer close()
+	srv.SetResponse(
+		mock.WithBody([]byte(errorBody)),
+		mock.WithStatusCode(500),
+	)
+
+	defaultEndpoint, _ := url.Parse(srv.URL())
+	internalClient, _ := azcore.NewClient("azcosmostest", "v1.0.0", azruntime.PipelineOptions{}, &policy.ClientOptions{
+		Transport: srv,
+		Retry:     policy.RetryOptions{MaxRetries: 0},
+	})
+	gem := &globalEndpointManager{preferredLocations: []string{}}
+	client := &Client{endpoint: srv.URL(), endpointUrl: defaultEndpoint, internal: internalClient, gem: gem}
+
+	database, _ := newDatabase("databaseId", client)
+	container, _ := newContainer("containerId", database)
+
+	_, err := container.getPartitionKeyRanges(context.TODO(), nil)
+	if err == nil {
+		t.Fatal("expected error from server returning 500, got nil")
+	}
+}
+
+func TestContainerReadPartitionKeyRanges404(t *testing.T) {
+	errorBody := `{"code":"NotFound","message":"resource not found"}`
+
+	srv, close := mock.NewTLSServer()
+	defer close()
+	srv.SetResponse(
+		mock.WithBody([]byte(errorBody)),
+		mock.WithStatusCode(404),
+	)
+
+	defaultEndpoint, _ := url.Parse(srv.URL())
+	internalClient, _ := azcore.NewClient("azcosmostest", "v1.0.0", azruntime.PipelineOptions{}, &policy.ClientOptions{
+		Transport: srv,
+		Retry:     policy.RetryOptions{MaxRetries: 0},
+	})
+	gem := &globalEndpointManager{preferredLocations: []string{}}
+	client := &Client{endpoint: srv.URL(), endpointUrl: defaultEndpoint, internal: internalClient, gem: gem}
+
+	database, _ := newDatabase("databaseId", client)
+	container, _ := newContainer("containerId", database)
+
+	_, err := container.getPartitionKeyRanges(context.TODO(), nil)
+	if err == nil {
+		t.Fatal("expected error from server returning 404, got nil")
+	}
+}
+
 func TestContainerGetChangeFeedWithStartFrom(t *testing.T) {
 	changeFeedBody := []byte(
 		`{"_rid":"test-rid",
