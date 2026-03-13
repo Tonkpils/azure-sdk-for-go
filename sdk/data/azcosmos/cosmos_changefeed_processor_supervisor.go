@@ -55,10 +55,6 @@ func newChangeFeedProcessorSupervisor(
 }
 
 var (
-	// errPartitionGone signals that the partition range has split or merged.
-	// The supervisor should stop and let the orchestrator re-sync leases.
-	errPartitionGone = errors.New("partition gone (split or merge detected)")
-
 	// errLeaseLost signals that another instance took ownership of the lease.
 	// The supervisor must stop immediately.
 	errLeaseLost = errors.New("lease lost (another instance took ownership)")
@@ -66,7 +62,33 @@ var (
 	// errNonRetryable signals a permanent error that should not be retried
 	// (e.g. 401 Unauthorized, 400 Bad Request, 404 Not Found, 403 Forbidden).
 	errNonRetryable = errors.New("non-retryable error")
+
+	// errHandlerFailed signals that the user's handler returned an error.
+	// The supervisor exits so the lease can be released and re-acquired,
+	// matching .NET's ObserverError close reason.
+	errHandlerFailed = errors.New("handler error")
 )
+
+// partitionGoneError carries the last continuation token when a 410 Gone
+// response indicates a partition split or merge. The orchestrator uses this
+// token to create child leases that resume from the correct position.
+type partitionGoneError struct {
+	continuationToken string
+}
+
+func (e *partitionGoneError) Error() string {
+	return "partition gone (split or merge detected)"
+}
+
+// isPartitionGone checks if an error is a partition gone error and returns the
+// continuation token if so.
+func isPartitionGone(err error) (string, bool) {
+	var pge *partitionGoneError
+	if errors.As(err, &pge) {
+		return pge.continuationToken, true
+	}
+	return "", false
+}
 
 // isNonRetryableStatusCode returns true for HTTP status codes that indicate
 // a permanent error. Aligned with .NET and Java SDK behavior.
@@ -142,7 +164,8 @@ func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 		delay, err := s.poll(ctx)
 		if err != nil {
 			// Fatal errors — exit immediately, no retry.
-			if errors.Is(err, errPartitionGone) || errors.Is(err, errLeaseLost) || errors.Is(err, errNonRetryable) {
+			var pge *partitionGoneError
+			if errors.As(err, &pge) || errors.Is(err, errLeaseLost) || errors.Is(err, errNonRetryable) || errors.Is(err, errHandlerFailed) {
 				return err
 			}
 			consecutiveFailures++
@@ -172,7 +195,7 @@ func (s *changeFeedProcessorSupervisor) pollLoop(ctx context.Context) error {
 // only for 429 throttling) and an error for fatal conditions.
 //
 // Error classification (aligned with .NET/Java SDKs):
-//   - 410 Gone: partition split/merge → errPartitionGone (fatal, orchestrator re-syncs)
+//   - 410 Gone: partition split/merge → partitionGoneError (fatal, orchestrator re-syncs)
 //   - 429 Too Many Requests: throttled → returns Retry-After delay, nil error (retryable)
 //   - 401, 400, 403, 404, etc.: non-retryable → errNonRetryable (fatal, no retry)
 //   - 503, 408, 500, network errors: transient → returns error (pollLoop retries with backoff)
@@ -192,8 +215,9 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 		var responseErr *azcore.ResponseError
 		if errors.As(err, &responseErr) {
 			// 410 Gone — partition split or merge. Stop and let orchestrator re-sync.
+			// Carry the current continuation token so child leases can resume.
 			if responseErr.StatusCode == http.StatusGone {
-				return 0, errPartitionGone
+				return 0, &partitionGoneError{continuationToken: s.lease.ContinuationToken}
 			}
 
 			// 429 Too Many Requests — respect Retry-After, not counted as failure.
@@ -239,7 +263,8 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 	}
 
 	if err := s.handler(ctx, documents); err != nil {
-		return 0, fmt.Errorf("handler error: %w", err)
+		s.monitor.notifyProcessingError(ctx, s.lease.ID, fmt.Errorf("handler error: %w", err))
+		return 0, fmt.Errorf("%w: %v", errHandlerFailed, err)
 	}
 
 	if err := s.checkpoint(ctx, &resp); err != nil {
