@@ -3,7 +3,10 @@
 
 package azcosmos
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // ChangeFeedProcessorHealthMonitor provides hooks into the processor lifecycle
 // for observability and error reporting. All methods are optional — implement
@@ -26,9 +29,21 @@ type ChangeFeedProcessorHealthMonitor struct {
 	// OnLeaseReleased is called when this instance releases a lease (shutdown or rebalance).
 	OnLeaseReleased func(ctx context.Context, leaseID string)
 
-	// OnError is called when an error occurs during processing, renewal, or checkpointing.
+	// OnError is called for all errors (catch-all). Always called regardless of
+	// whether a more specific callback (OnLeaseContention, OnProcessingError) is set.
 	// The leaseID may be empty for errors not tied to a specific lease.
 	OnError func(ctx context.Context, leaseID string, err error)
+
+	// OnLeaseContention is called when a lease operation fails due to contention
+	// (412 Precondition Failed / ETag mismatch). This is expected during rebalancing
+	// and does not indicate a problem. Use this to distinguish contention from real
+	// failures instead of string-matching in OnError.
+	OnLeaseContention func(ctx context.Context, leaseID string)
+
+	// OnProcessingError is called when an error occurs during change feed reading,
+	// handler execution, or checkpointing — i.e., real processing failures as opposed
+	// to lease contention.
+	OnProcessingError func(ctx context.Context, leaseID string, err error)
 
 	// OnSyncComplete is called after each lease synchronization cycle with the
 	// total number of feed ranges (physical partitions) in the monitored container.
@@ -53,6 +68,34 @@ func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseReleased(ctx context.Conte
 // notifyError calls OnError if the monitor and callback are non-nil.
 func (m *ChangeFeedProcessorHealthMonitor) notifyError(ctx context.Context, leaseID string, err error) {
 	if m != nil && m.OnError != nil {
+		m.OnError(ctx, leaseID, err)
+	}
+}
+
+// notifyLeaseContention calls OnLeaseContention for 412/ETag mismatch errors.
+// Also calls OnError as the catch-all.
+func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseContention(ctx context.Context, leaseID string) {
+	if m == nil {
+		return
+	}
+	if m.OnLeaseContention != nil {
+		m.OnLeaseContention(ctx, leaseID)
+	}
+	if m.OnError != nil {
+		m.OnError(ctx, leaseID, fmt.Errorf("lease contention (412) on lease %s", leaseID))
+	}
+}
+
+// notifyProcessingError calls OnProcessingError for real processing failures.
+// Also calls OnError as the catch-all.
+func (m *ChangeFeedProcessorHealthMonitor) notifyProcessingError(ctx context.Context, leaseID string, err error) {
+	if m == nil {
+		return
+	}
+	if m.OnProcessingError != nil {
+		m.OnProcessingError(ctx, leaseID, err)
+	}
+	if m.OnError != nil {
 		m.OnError(ctx, leaseID, err)
 	}
 }

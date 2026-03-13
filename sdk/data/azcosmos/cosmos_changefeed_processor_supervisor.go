@@ -121,7 +121,7 @@ func (s *changeFeedProcessorSupervisor) renewLoop(ctx context.Context) error {
 				if isPreconditionFailed(err) {
 					return errLeaseLost
 				}
-				s.monitor.notifyError(ctx, s.lease.ID, fmt.Errorf("renew failed: %w", err))
+				s.monitor.notifyProcessingError(ctx, s.lease.ID, fmt.Errorf("renew failed: %w", err))
 			}
 		}
 	}
@@ -215,14 +215,14 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 
 			// Non-retryable errors — fail fast, don't waste retry budget.
 			if isNonRetryableStatusCode(responseErr.StatusCode) {
-				s.monitor.notifyError(ctx, s.lease.ID, fmt.Errorf("non-retryable error (HTTP %d): %w", responseErr.StatusCode, err))
+				s.monitor.notifyProcessingError(ctx, s.lease.ID, fmt.Errorf("non-retryable error (HTTP %d): %w", responseErr.StatusCode, err))
 				return 0, fmt.Errorf("%w: HTTP %d: %s", errNonRetryable, responseErr.StatusCode, responseErr.ErrorCode)
 			}
 		}
 
 		// Transient / unknown errors — let pollLoop retry with backoff.
 		cfErr := fmt.Errorf("change feed read error: %w", err)
-		s.monitor.notifyError(ctx, s.lease.ID, cfErr)
+		s.monitor.notifyProcessingError(ctx, s.lease.ID, cfErr)
 		return 0, cfErr
 	}
 
