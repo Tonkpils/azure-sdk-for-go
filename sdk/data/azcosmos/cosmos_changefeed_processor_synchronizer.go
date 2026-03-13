@@ -112,6 +112,8 @@ func (s *changeFeedProcessorSynchronizer) synchronizeLeases(ctx context.Context)
 		}
 	}
 
+	s.monitor.notifySyncComplete(ctx, len(feedRanges))
+
 	return nil
 }
 

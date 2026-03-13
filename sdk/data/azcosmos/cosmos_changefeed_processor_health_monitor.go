@@ -29,6 +29,11 @@ type ChangeFeedProcessorHealthMonitor struct {
 	// OnError is called when an error occurs during processing, renewal, or checkpointing.
 	// The leaseID may be empty for errors not tied to a specific lease.
 	OnError func(ctx context.Context, leaseID string, err error)
+
+	// OnSyncComplete is called after each lease synchronization cycle with the
+	// total number of feed ranges (physical partitions) in the monitored container.
+	// Use this to metric partition count without polling GetCurrentState.
+	OnSyncComplete func(ctx context.Context, totalRanges int)
 }
 
 // notifyLeaseAcquired calls OnLeaseAcquired if the monitor and callback are non-nil.
@@ -49,5 +54,12 @@ func (m *ChangeFeedProcessorHealthMonitor) notifyLeaseReleased(ctx context.Conte
 func (m *ChangeFeedProcessorHealthMonitor) notifyError(ctx context.Context, leaseID string, err error) {
 	if m != nil && m.OnError != nil {
 		m.OnError(ctx, leaseID, err)
+	}
+}
+
+// notifySyncComplete calls OnSyncComplete if the monitor and callback are non-nil.
+func (m *ChangeFeedProcessorHealthMonitor) notifySyncComplete(ctx context.Context, totalRanges int) {
+	if m != nil && m.OnSyncComplete != nil {
+		m.OnSyncComplete(ctx, totalRanges)
 	}
 }
