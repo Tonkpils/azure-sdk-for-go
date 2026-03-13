@@ -256,7 +256,11 @@ func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	for i := range leasesToTake {
 		lease := &leasesToTake[i]
 		if err := p.leaseManager.acquireLease(ctx, lease); err != nil {
-			p.monitor.notifyError(ctx, lease.ID, err)
+			if isPreconditionFailed(err) {
+				p.monitor.notifyLeaseContention(ctx, lease.ID)
+			} else {
+				p.monitor.notifyError(ctx, lease.ID, err)
+			}
 			continue
 		}
 		p.monitor.notifyLeaseAcquired(ctx, lease.ID)
