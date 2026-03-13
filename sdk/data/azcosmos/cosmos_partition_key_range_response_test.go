@@ -136,3 +136,34 @@ func TestPartitionKeyRangeResponseParsing(t *testing.T) {
 		t.Errorf("Expected MaxExclusive to be %s, but got %s", "FF", parsedPkr2.MaxExclusive)
 	}
 }
+
+func TestPartitionKeyRangeResponseNilResponse(t *testing.T) {
+	// Verify that newPartitionKeyRangeResponse handles nil *http.Response
+	// gracefully instead of panicking. This is the defense-in-depth guard
+	// for the bug where getPartitionKeyRanges passed a nil response.
+	resp, err := newPartitionKeyRangeResponse(nil)
+	if err != nil {
+		t.Fatalf("expected nil error for nil response, got: %v", err)
+	}
+	if resp.RawResponse != nil {
+		t.Error("expected nil RawResponse")
+	}
+	if len(resp.PartitionKeyRanges) != 0 {
+		t.Error("expected empty PartitionKeyRanges")
+	}
+}
+
+func TestNewResponseNilDoesNotPanic(t *testing.T) {
+	// Verify that newResponse(nil) returns a zero-value Response
+	// instead of panicking on nil dereference.
+	resp := newResponse(nil)
+	if resp.RawResponse != nil {
+		t.Error("expected nil RawResponse")
+	}
+	if resp.RequestCharge != 0 {
+		t.Errorf("expected 0 RequestCharge, got %f", resp.RequestCharge)
+	}
+	if resp.ActivityID != "" {
+		t.Errorf("expected empty ActivityID, got %s", resp.ActivityID)
+	}
+}
