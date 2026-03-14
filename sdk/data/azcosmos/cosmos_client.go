@@ -33,6 +33,7 @@ type Client struct {
 	internal    *azcore.Client
 	gem         *globalEndpointManager
 	endpointUrl *url.URL
+	direct      *directTransport // nil when using gateway mode
 }
 
 // Endpoint used to create the client.
@@ -64,7 +65,34 @@ func NewClientWithKey(endpoint string, cred KeyCredential, o *ClientOptions) (*C
 	if err != nil {
 		return nil, err
 	}
-	return &Client{endpoint: endpoint, endpointUrl: endpointUrl, internal: internalClient, gem: gem}, nil
+
+	c := &Client{endpoint: endpoint, endpointUrl: endpointUrl, internal: internalClient, gem: gem}
+
+	if o != nil && o.ConnectionMode == ConnectionModeDirect {
+		directOpts := DirectModeOptions{
+			MaxConnectionsPerEndpoint: 10,
+			MaxRequestsPerConnection:  30,
+			ConnectTimeout:            5 * time.Second,
+			IdleTimeout:               60 * time.Second,
+		}
+		if o.DirectMode != nil {
+			if o.DirectMode.MaxConnectionsPerEndpoint > 0 {
+				directOpts.MaxConnectionsPerEndpoint = o.DirectMode.MaxConnectionsPerEndpoint
+			}
+			if o.DirectMode.MaxRequestsPerConnection > 0 {
+				directOpts.MaxRequestsPerConnection = o.DirectMode.MaxRequestsPerConnection
+			}
+			if o.DirectMode.ConnectTimeout > 0 {
+				directOpts.ConnectTimeout = o.DirectMode.ConnectTimeout
+			}
+			if o.DirectMode.IdleTimeout > 0 {
+				directOpts.IdleTimeout = o.DirectMode.IdleTimeout
+			}
+		}
+		c.direct = newDirectTransport(c, directOpts)
+	}
+
+	return c, nil
 }
 
 // NewClient creates a new instance of Cosmos client with Azure AD access token authentication. It uses the default pipeline configuration.
@@ -110,7 +138,34 @@ func NewClient(endpoint string, cred azcore.TokenCredential, o *ClientOptions) (
 	if err != nil {
 		return nil, err
 	}
-	return &Client{endpoint: endpoint, endpointUrl: endpointUrl, internal: internalClient, gem: gem}, nil
+
+	c := &Client{endpoint: endpoint, endpointUrl: endpointUrl, internal: internalClient, gem: gem}
+
+	if o != nil && o.ConnectionMode == ConnectionModeDirect {
+		directOpts := DirectModeOptions{
+			MaxConnectionsPerEndpoint: 10,
+			MaxRequestsPerConnection:  30,
+			ConnectTimeout:            5 * time.Second,
+			IdleTimeout:               60 * time.Second,
+		}
+		if o.DirectMode != nil {
+			if o.DirectMode.MaxConnectionsPerEndpoint > 0 {
+				directOpts.MaxConnectionsPerEndpoint = o.DirectMode.MaxConnectionsPerEndpoint
+			}
+			if o.DirectMode.MaxRequestsPerConnection > 0 {
+				directOpts.MaxRequestsPerConnection = o.DirectMode.MaxRequestsPerConnection
+			}
+			if o.DirectMode.ConnectTimeout > 0 {
+				directOpts.ConnectTimeout = o.DirectMode.ConnectTimeout
+			}
+			if o.DirectMode.IdleTimeout > 0 {
+				directOpts.IdleTimeout = o.DirectMode.IdleTimeout
+			}
+		}
+		c.direct = newDirectTransport(c, directOpts)
+	}
+
+	return c, nil
 }
 
 // NewClientFromConnectionString creates a new instance of Cosmos client from connection string. It uses the default pipeline configuration.
@@ -540,6 +595,11 @@ func (c *Client) executeAndEnsureSuccessResponse(ctx context.Context, request *p
 
 func (c *Client) accountEndpointUrl() *url.URL {
 	return c.endpointUrl
+}
+
+// isDirectMode returns true if the client is configured for direct TCP mode.
+func (c *Client) isDirectMode() bool {
+	return c.direct != nil
 }
 
 func (c *Client) addResponseValuesToSpan(ctx context.Context, resp *http.Response) {
