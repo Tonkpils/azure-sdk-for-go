@@ -77,6 +77,18 @@ type ChangeFeedProcessorOptions struct {
 	// all partition supervisors. When set, supervisors will pause between polls
 	// to stay within the RU budget. 0 means unlimited (default).
 	MaxRUPerSecond float64
+
+	// MaxConcurrentOperations limits the number of concurrent Cosmos requests
+	// for lease operations (CRUD on the lease container). This prevents HTTP/2
+	// MAX_CONCURRENT_STREAMS exhaustion in gateway mode. Default: 50.
+	// Increase if you have many partitions and observe slow lease acquisition.
+	MaxConcurrentOperations int
+
+	// MaxLeasesPerAcquireCycle limits how many leases are acquired in a single
+	// balancer cycle. Prevents a goroutine stampede when many leases are available
+	// (e.g., on startup with 1000+ partitions). Default: 50.
+	// Matches Java SDK's maxLeasesToAcquirePerCycle.
+	MaxLeasesPerAcquireCycle int
 }
 
 // changeFeedProcessorDefaults returns options with sensible defaults.
@@ -88,5 +100,7 @@ func changeFeedProcessorDefaults() ChangeFeedProcessorOptions {
 		LeaseRenewInterval:      17 * time.Second,
 		LeaseAcquireInterval:    13 * time.Second,
 		RequestTimeout:          30 * time.Second,
+		MaxConcurrentOperations: 50,
+		MaxLeasesPerAcquireCycle: 50,
 	}
 }
