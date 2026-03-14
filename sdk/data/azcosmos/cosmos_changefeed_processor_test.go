@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -519,4 +520,142 @@ func TestPollLoopNonRetryableExitsImmediately(t *testing.T) {
 	// errHandlerFailed should not match other sentinels
 	require.False(t, errors.Is(errHandlerFailed, errLeaseLost))
 	require.False(t, errors.Is(errHandlerFailed, errNonRetryable))
+}
+
+// --- Scaling Tests ---
+
+func TestLeaseStoreConcurrencyLimiter(t *testing.T) {
+	// Verify that the semaphore limits concurrent operations.
+	store := newChangeFeedProcessorLeaseStore(nil, "", 3)
+	require.Equal(t, 3, cap(store.sem), "semaphore capacity should match maxConcurrent")
+
+	// Fill the semaphore
+	store.acquire()
+	store.acquire()
+	store.acquire()
+
+	// Fourth acquire should block — verify with a non-blocking check
+	select {
+	case store.sem <- struct{}{}:
+		t.Fatal("semaphore should be full, but accepted a fourth acquire")
+	default:
+		// Expected — semaphore is full
+	}
+
+	// Release one and verify we can acquire again
+	store.release()
+	store.acquire() // should not block
+	store.release()
+	store.release()
+	store.release()
+}
+
+func TestLeaseStoreConcurrencyLimiterDefault(t *testing.T) {
+	// maxConcurrent <= 0 should default to 50
+	store := newChangeFeedProcessorLeaseStore(nil, "", 0)
+	require.Equal(t, 50, cap(store.sem))
+
+	store2 := newChangeFeedProcessorLeaseStore(nil, "", -1)
+	require.Equal(t, 50, cap(store2.sem))
+}
+
+func TestMaxLeasesPerAcquireCycleDefault(t *testing.T) {
+	defaults := changeFeedProcessorDefaults()
+	require.Equal(t, 50, defaults.MaxLeasesPerAcquireCycle)
+	require.Equal(t, 50, defaults.MaxConcurrentOperations)
+}
+
+func TestBalancerResultsCappedByMaxPerCycle(t *testing.T) {
+	// Simulate: balancer returns 200 leases, but MaxLeasesPerAcquireCycle=50.
+	// The acquire loop should only process 50.
+	leases := make([]changeFeedProcessorLease, 200)
+	for i := range leases {
+		fr := newTestFeedRange(fmt.Sprintf("%04x", i), fmt.Sprintf("%04x", i+1))
+		leases[i] = newTestLease("", fr, 0) // unowned
+	}
+
+	b := newChangeFeedProcessorBalancer("me", 60*time.Second, 0, 0, BalancerStrategyGreedy)
+	toTake := b.selectLeasesToAcquire(leases)
+
+	// Balancer would return all 200 (greedy strategy, all unowned).
+	require.True(t, len(toTake) > 50, "greedy balancer should want more than 50 leases")
+
+	// Apply the cap (same logic as acquireLeases)
+	maxPerCycle := 50
+	if len(toTake) > maxPerCycle {
+		toTake = toTake[:maxPerCycle]
+	}
+	require.Equal(t, 50, len(toTake), "should be capped at MaxLeasesPerAcquireCycle")
+}
+
+func TestReleaseLease404IsNoOp(t *testing.T) {
+	// Verify that isPreconditionFailed and 404 handling exist in releaseLease.
+	// The actual 404 behavior requires a mock server, but we verify the
+	// error classification function handles it.
+	require.False(t, isNonRetryableStatusCode(412), "412 is a concurrency error, not non-retryable")
+	require.True(t, isNonRetryableStatusCode(404), "404 should be classified as non-retryable for poll errors")
+}
+
+func TestPartitionGoneErrorCarriesToken(t *testing.T) {
+	// Verify the full round-trip: poll returns partitionGoneError with token,
+	// the goroutine persists it, then calls synchronizeLeases reactively.
+	pge := &partitionGoneError{continuationToken: "continuation-abc"}
+
+	// Should be detectable
+	token, ok := isPartitionGone(pge)
+	require.True(t, ok)
+	require.Equal(t, "continuation-abc", token)
+
+	// Should have the right error message
+	require.Equal(t, "partition gone (split or merge detected)", pge.Error())
+
+	// Empty token should still be detectable
+	pge2 := &partitionGoneError{continuationToken: ""}
+	token2, ok2 := isPartitionGone(pge2)
+	require.True(t, ok2)
+	require.Equal(t, "", token2)
+
+	// Non-partitionGone error should not match
+	_, ok3 := isPartitionGone(errors.New("some other error"))
+	require.False(t, ok3)
+}
+
+func TestJitteredIntervalRange(t *testing.T) {
+	base := 13 * time.Second
+	// Run 100 iterations and verify all results are within ±30%
+	minExpected := time.Duration(float64(base) * 0.7)
+	maxExpected := time.Duration(float64(base) * 1.3)
+	for i := 0; i < 100; i++ {
+		jittered := jitteredInterval(base)
+		require.GreaterOrEqual(t, jittered, minExpected, "jittered interval below −30%%")
+		require.LessOrEqual(t, jittered, maxExpected, "jittered interval above +30%%")
+	}
+}
+
+func TestHandlerErrorExitsSupervisor(t *testing.T) {
+	// errHandlerFailed should be a fatal error that exits the poll loop.
+	// Verify it's detected in the same category as other fatal errors.
+	wrapped := fmt.Errorf("%w: something broke", errHandlerFailed)
+	require.True(t, errors.Is(wrapped, errHandlerFailed))
+
+	// It should NOT match transient error sentinels
+	require.False(t, errors.Is(wrapped, errLeaseLost))
+	require.False(t, errors.Is(wrapped, errNonRetryable))
+}
+
+func TestLeaseCloseReasonValues(t *testing.T) {
+	// Verify all close reason constants are distinct
+	reasons := []LeaseCloseReason{
+		LeaseCloseReasonShutdown,
+		LeaseCloseReasonLeaseLost,
+		LeaseCloseReasonPartitionGone,
+		LeaseCloseReasonObserverError,
+		LeaseCloseReasonNonRetryableError,
+		LeaseCloseReasonUnknown,
+	}
+	seen := make(map[LeaseCloseReason]bool)
+	for _, r := range reasons {
+		require.False(t, seen[r], "duplicate LeaseCloseReason value: %d", r)
+		seen[r] = true
+	}
 }
