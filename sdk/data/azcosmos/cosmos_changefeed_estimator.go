@@ -89,7 +89,7 @@ func NewChangeFeedEstimator(
 		opts.LeasePrefix = options.LeasePrefix
 	}
 
-	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix)
+	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix, 50)
 
 	return &ChangeFeedEstimator{
 		monitoredContainer: monitoredContainer,

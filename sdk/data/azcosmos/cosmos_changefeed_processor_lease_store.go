@@ -15,19 +15,29 @@ import (
 
 // changeFeedProcessorLeaseStore handles CRUD operations for lease documents
 // in the lease container. Uses ETag-based optimistic concurrency for all writes.
+// A channel-based semaphore limits concurrent Cosmos requests to prevent HTTP/2
+// MAX_CONCURRENT_STREAMS exhaustion in gateway mode.
 type changeFeedProcessorLeaseStore struct {
 	container *ContainerClient
 	prefix    string
+	sem       chan struct{} // concurrency limiter
 }
 
 // newChangeFeedProcessorLeaseStore creates a new lease store backed by the given container.
-// When prefix is non-empty, getAllLeases filters to only leases matching the prefix.
-func newChangeFeedProcessorLeaseStore(container *ContainerClient, prefix string) *changeFeedProcessorLeaseStore {
+// maxConcurrent controls the maximum number of simultaneous Cosmos operations.
+func newChangeFeedProcessorLeaseStore(container *ContainerClient, prefix string, maxConcurrent int) *changeFeedProcessorLeaseStore {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 50
+	}
 	return &changeFeedProcessorLeaseStore{
 		container: container,
 		prefix:    prefix,
+		sem:       make(chan struct{}, maxConcurrent),
 	}
 }
+
+func (s *changeFeedProcessorLeaseStore) acquire() { s.sem <- struct{}{} }
+func (s *changeFeedProcessorLeaseStore) release() { <-s.sem }
 
 // getAllLeases reads all lease documents from the lease container.
 // Uses a cross-partition query to retrieve every lease across all partitions.
@@ -60,6 +70,9 @@ func (s *changeFeedProcessorLeaseStore) getAllLeases(ctx context.Context) ([]cha
 
 // getLease reads a specific lease document by ID.
 func (s *changeFeedProcessorLeaseStore) getLease(ctx context.Context, leaseID string) (*changeFeedProcessorLease, error) {
+	s.acquire()
+	defer s.release()
+
 	pk := NewPartitionKeyString(leaseID)
 	resp, err := s.container.ReadItem(ctx, pk, leaseID, nil)
 	if err != nil {
@@ -77,6 +90,9 @@ func (s *changeFeedProcessorLeaseStore) getLease(ctx context.Context, leaseID st
 
 // createLease creates a new lease document. Returns an error if it already exists (409 Conflict).
 func (s *changeFeedProcessorLeaseStore) createLease(ctx context.Context, lease *changeFeedProcessorLease) error {
+	s.acquire()
+	defer s.release()
+
 	data, err := json.Marshal(lease)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lease: %w", err)
@@ -96,6 +112,9 @@ func (s *changeFeedProcessorLeaseStore) createLease(ctx context.Context, lease *
 // The lease's ETag must match the current document — if another instance modified
 // the lease since it was last read, the update fails with 412 Precondition Failed.
 func (s *changeFeedProcessorLeaseStore) updateLease(ctx context.Context, lease *changeFeedProcessorLease) error {
+	s.acquire()
+	defer s.release()
+
 	data, err := json.Marshal(lease)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lease: %w", err)
@@ -118,6 +137,9 @@ func (s *changeFeedProcessorLeaseStore) updateLease(ctx context.Context, lease *
 
 // deleteLease removes a lease document from the container.
 func (s *changeFeedProcessorLeaseStore) deleteLease(ctx context.Context, leaseID string) error {
+	s.acquire()
+	defer s.release()
+
 	pk := NewPartitionKeyString(leaseID)
 	_, err := s.container.DeleteItem(ctx, pk, leaseID, nil)
 	if err != nil {
@@ -130,6 +152,9 @@ func (s *changeFeedProcessorLeaseStore) deleteLease(ctx context.Context, leaseID
 // If the lease already exists (409 Conflict), the existing lease is returned.
 // This makes the operation idempotent for safe concurrent initialization.
 func (s *changeFeedProcessorLeaseStore) createLeaseIfNotExists(ctx context.Context, lease *changeFeedProcessorLease) (*changeFeedProcessorLease, error) {
+	s.acquire()
+	defer s.release()
+
 	data, err := json.Marshal(lease)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal lease: %w", err)

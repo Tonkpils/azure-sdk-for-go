@@ -72,11 +72,16 @@ func (m *changeFeedProcessorLeaseManager) renewLease(ctx context.Context, lease 
 func (m *changeFeedProcessorLeaseManager) releaseLease(ctx context.Context, lease *changeFeedProcessorLease) error {
 	currentLease, err := m.store.getLease(ctx, lease.ID)
 	if err != nil {
+		// 404 — lease was already deleted (by synchronizer during split/merge).
+		// This is harmless; the lease is already gone.
+		var responseErr *azcore.ResponseError
+		if errors.As(err, &responseErr) && responseErr.StatusCode == http.StatusNotFound {
+			return nil
+		}
 		return fmt.Errorf("failed to read lease %s for release: %w", lease.ID, err)
 	}
 
 	if currentLease.Owner != m.instanceName {
-		// Someone else already owns it — nothing to do.
 		return nil
 	}
 
@@ -85,13 +90,16 @@ func (m *changeFeedProcessorLeaseManager) releaseLease(ctx context.Context, leas
 
 	if err := m.store.updateLease(ctx, currentLease); err != nil {
 		if isPreconditionFailed(err) {
-			// Another instance took it between our read and write — fine.
+			return nil
+		}
+		// 404 on write — lease was deleted between our read and write.
+		var responseErr *azcore.ResponseError
+		if errors.As(err, &responseErr) && responseErr.StatusCode == http.StatusNotFound {
 			return nil
 		}
 		return fmt.Errorf("failed to release lease %s: %w", lease.ID, err)
 	}
 
-	// Reflect the released state back to the caller's copy.
 	lease.Owner = currentLease.Owner
 	lease.ETag = currentLease.ETag
 	lease.Timestamp = currentLease.Timestamp

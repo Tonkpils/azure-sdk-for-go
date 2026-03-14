@@ -105,6 +105,12 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		opts.BalancerStrategy = options.BalancerStrategy
 		opts.HealthMonitor = options.HealthMonitor
 		opts.MaxRUPerSecond = options.MaxRUPerSecond
+		if options.MaxConcurrentOperations > 0 {
+			opts.MaxConcurrentOperations = options.MaxConcurrentOperations
+		}
+		if options.MaxLeasesPerAcquireCycle > 0 {
+			opts.MaxLeasesPerAcquireCycle = options.MaxLeasesPerAcquireCycle
+		}
 	}
 
 	instanceName, err := generateInstanceName()
@@ -112,7 +118,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		return nil, fmt.Errorf("azcosmos: failed to generate instance name: %w", err)
 	}
 
-	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix)
+	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix, opts.MaxConcurrentOperations)
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
 	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode, opts.HealthMonitor)
 	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount, opts.BalancerStrategy)
@@ -161,22 +167,17 @@ func (p *ChangeFeedProcessor) Start(ctx context.Context) error {
 		}
 	}
 
-	// 3. Start lease renewal goroutine
-	go p.renewLoop(ctx)
-
-	// 4. Eagerly start supervisors for leases we already own (e.g. after a
+	// 3. Eagerly start supervisors for leases we already own (e.g. after a
 	// restart). Matches .NET's LoadLeasesAsync which starts processing
 	// owned leases immediately rather than waiting for the first acquire cycle.
 	p.loadOwnedLeases(ctx)
 
-	// 5. Main acquisition loop — uses jittered interval to reduce 412
+	// 4. Main acquisition loop — uses jittered interval to reduce 412
 	// collisions when multiple instances start with the same configuration.
+	// Note: synchronizeLeases runs only at startup (above) and reactively
+	// when a supervisor reports partitionGoneError. Matches .NET's
+	// BootstrapperCore pattern — no periodic re-scan.
 	for {
-		// Re-synchronize on every cycle to pick up partition splits/merges.
-		if err := p.synchronizer.synchronizeLeases(ctx); err != nil {
-			p.monitor.notifyError(ctx, "", fmt.Errorf("lease sync failed: %w", err))
-		}
-
 		p.acquireLeases(ctx)
 
 		jittered := jitteredInterval(p.options.LeaseAcquireInterval)
@@ -247,6 +248,12 @@ func (p *ChangeFeedProcessor) acquireLeases(ctx context.Context) {
 	p.startSupervisorsForOwnedLeases(ctx, allLeases)
 
 	leasesToTake := p.balancer.selectLeasesToAcquire(allLeases)
+
+	// Cap per cycle to prevent goroutine stampede at scale.
+	if p.options.MaxLeasesPerAcquireCycle > 0 && len(leasesToTake) > p.options.MaxLeasesPerAcquireCycle {
+		leasesToTake = leasesToTake[:p.options.MaxLeasesPerAcquireCycle]
+	}
+
 	for i := range leasesToTake {
 		lease := &leasesToTake[i]
 		if err := p.leaseManager.acquireLease(ctx, lease); err != nil {
@@ -327,6 +334,11 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 					lease.ContinuationToken = token
 					_ = p.leaseStore.updateLease(ctx, lease)
 				}
+				// Reactively sync leases to create child partitions.
+				// Matches .NET's HandlePartitionGoneAsync pattern.
+				if syncErr := p.synchronizer.synchronizeLeases(ctx); syncErr != nil {
+					p.monitor.notifyError(ctx, lease.ID, fmt.Errorf("reactive sync failed: %w", syncErr))
+				}
 			} else if errors.Is(err, errLeaseLost) {
 				reason = LeaseCloseReasonLeaseLost
 			} else if errors.Is(err, errHandlerFailed) {
@@ -351,36 +363,6 @@ func (p *ChangeFeedProcessor) startSupervisor(ctx context.Context, lease *change
 			p.monitor.notifyLeaseClosed(ctx, lease.ID, reason)
 		}
 	}()
-}
-
-// renewLoop periodically renews all leases owned by this instance.
-func (p *ChangeFeedProcessor) renewLoop(ctx context.Context) {
-	ticker := time.NewTicker(p.options.LeaseRenewInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			p.renewOwnedLeases(ctx)
-		}
-	}
-}
-
-// renewOwnedLeases renews every lease this instance currently owns.
-func (p *ChangeFeedProcessor) renewOwnedLeases(ctx context.Context) {
-	allLeases, err := p.leaseStore.getAllLeases(ctx)
-	if err != nil {
-		p.monitor.notifyError(ctx, "", fmt.Errorf("failed to list leases for renewal: %w", err))
-		return
-	}
-	for i := range allLeases {
-		if allLeases[i].Owner == p.instanceName {
-			if err := p.leaseManager.renewLease(ctx, &allLeases[i]); err != nil {
-				p.monitor.notifyError(ctx, allLeases[i].ID, fmt.Errorf("failed to renew lease: %w", err))
-			}
-		}
-	}
 }
 
 // releaseAllLeases cancels all supervisors and releases owned leases during shutdown.
