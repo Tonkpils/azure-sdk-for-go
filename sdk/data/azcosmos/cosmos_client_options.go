@@ -15,4 +15,10 @@ type ClientOptions struct {
 	EnableContentResponseOnWrite bool
 	// PreferredRegions is a list of regions to be used when initializing the client in case the default region fails.
 	PreferredRegions []string
+	// ConnectionMode specifies the connection protocol.
+	// Default: ConnectionModeGateway.
+	ConnectionMode ConnectionMode
+	// DirectMode configures the direct mode TCP transport.
+	// Only used when ConnectionMode is ConnectionModeDirect.
+	DirectMode *DirectModeOptions
 }
