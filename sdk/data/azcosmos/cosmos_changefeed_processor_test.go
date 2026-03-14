@@ -561,7 +561,7 @@ func TestLeaseStoreConcurrencyLimiterDefault(t *testing.T) {
 
 func TestMaxLeasesPerAcquireCycleDefault(t *testing.T) {
 	defaults := changeFeedProcessorDefaults()
-	require.Equal(t, 50, defaults.MaxLeasesPerAcquireCycle)
+	require.Equal(t, 0, defaults.MaxLeasesPerAcquireCycle, "default should be unlimited")
 	require.Equal(t, 50, defaults.MaxConcurrentOperations)
 }
 

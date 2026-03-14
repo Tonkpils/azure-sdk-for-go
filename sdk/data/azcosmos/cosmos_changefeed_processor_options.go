@@ -85,9 +85,10 @@ type ChangeFeedProcessorOptions struct {
 	MaxConcurrentOperations int
 
 	// MaxLeasesPerAcquireCycle limits how many leases are acquired in a single
-	// balancer cycle. Prevents a goroutine stampede when many leases are available
-	// (e.g., on startup with 1000+ partitions). Default: 50.
-	// Matches Java SDK's maxLeasesToAcquirePerCycle.
+	// balancer cycle. Default: 0 (unlimited — the balancer decides based on
+	// target distribution, and the MaxConcurrentOperations semaphore prevents
+	// HTTP/2 overload). Set a positive value to limit goroutine creation rate
+	// if memory is a concern at very high partition counts.
 	MaxLeasesPerAcquireCycle int
 }
 
@@ -101,6 +102,6 @@ func changeFeedProcessorDefaults() ChangeFeedProcessorOptions {
 		LeaseAcquireInterval:    13 * time.Second,
 		RequestTimeout:          30 * time.Second,
 		MaxConcurrentOperations: 50,
-		MaxLeasesPerAcquireCycle: 50,
+		MaxLeasesPerAcquireCycle: 0, // unlimited — semaphore guards HTTP/2
 	}
 }
