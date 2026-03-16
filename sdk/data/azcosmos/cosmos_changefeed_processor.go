@@ -105,9 +105,6 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		opts.BalancerStrategy = options.BalancerStrategy
 		opts.HealthMonitor = options.HealthMonitor
 		opts.MaxRUPerSecond = options.MaxRUPerSecond
-		if options.MaxConcurrentOperations > 0 {
-			opts.MaxConcurrentOperations = options.MaxConcurrentOperations
-		}
 		if options.MaxLeasesPerAcquireCycle > 0 {
 			opts.MaxLeasesPerAcquireCycle = options.MaxLeasesPerAcquireCycle
 		}
@@ -118,7 +115,7 @@ func (c *ContainerClient) NewChangeFeedProcessor(
 		return nil, fmt.Errorf("azcosmos: failed to generate instance name: %w", err)
 	}
 
-	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix, opts.MaxConcurrentOperations)
+	leaseStore := newChangeFeedProcessorLeaseStore(leaseContainer, opts.LeasePrefix, 0)
 	leaseManager := newChangeFeedProcessorLeaseManager(leaseStore, instanceName, opts)
 	synchronizer := newChangeFeedProcessorSynchronizer(c, leaseStore, opts.LeasePrefix, opts.Mode, opts.HealthMonitor)
 	balancer := newChangeFeedProcessorBalancer(instanceName, opts.LeaseExpirationInterval, opts.MinPartitionCount, opts.MaxPartitionCount, opts.BalancerStrategy)

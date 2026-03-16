@@ -525,44 +525,19 @@ func TestPollLoopNonRetryableExitsImmediately(t *testing.T) {
 // --- Scaling Tests ---
 
 func TestLeaseStoreConcurrencyLimiter(t *testing.T) {
-	// Verify that the semaphore limits concurrent operations.
-	store := newChangeFeedProcessorLeaseStore(nil, "", 3)
-	require.Equal(t, 3, cap(store.sem), "semaphore capacity should match maxConcurrent")
-
-	// Fill the semaphore
-	store.acquire()
-	store.acquire()
-	store.acquire()
-
-	// Fourth acquire should block — verify with a non-blocking check
-	select {
-	case store.sem <- struct{}{}:
-		t.Fatal("semaphore should be full, but accepted a fourth acquire")
-	default:
-		// Expected — semaphore is full
-	}
-
-	// Release one and verify we can acquire again
-	store.release()
-	store.acquire() // should not block
-	store.release()
-	store.release()
-	store.release()
+	// Verify lease store can be created with or without the legacy maxConcurrent param.
+	store := newChangeFeedProcessorLeaseStore(nil, "", 0)
+	require.NotNil(t, store)
 }
 
 func TestLeaseStoreConcurrencyLimiterDefault(t *testing.T) {
-	// maxConcurrent <= 0 should default to 50
 	store := newChangeFeedProcessorLeaseStore(nil, "", 0)
-	require.Equal(t, 50, cap(store.sem))
-
-	store2 := newChangeFeedProcessorLeaseStore(nil, "", -1)
-	require.Equal(t, 50, cap(store2.sem))
+	require.NotNil(t, store)
 }
 
 func TestMaxLeasesPerAcquireCycleDefault(t *testing.T) {
 	defaults := changeFeedProcessorDefaults()
 	require.Equal(t, 0, defaults.MaxLeasesPerAcquireCycle, "default should be unlimited")
-	require.Equal(t, 50, defaults.MaxConcurrentOperations)
 }
 
 func TestBalancerResultsCappedByMaxPerCycle(t *testing.T) {

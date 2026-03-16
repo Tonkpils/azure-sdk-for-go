@@ -78,12 +78,6 @@ type ChangeFeedProcessorOptions struct {
 	// to stay within the RU budget. 0 means unlimited (default).
 	MaxRUPerSecond float64
 
-	// MaxConcurrentOperations limits the number of concurrent Cosmos requests
-	// for lease operations (CRUD on the lease container). This prevents HTTP/2
-	// MAX_CONCURRENT_STREAMS exhaustion in gateway mode. Default: 50.
-	// Increase if you have many partitions and observe slow lease acquisition.
-	MaxConcurrentOperations int
-
 	// MaxLeasesPerAcquireCycle limits how many leases are acquired in a single
 	// balancer cycle. Default: 0 (unlimited — the balancer decides based on
 	// target distribution, and the MaxConcurrentOperations semaphore prevents
@@ -101,7 +95,6 @@ func changeFeedProcessorDefaults() ChangeFeedProcessorOptions {
 		LeaseRenewInterval:      17 * time.Second,
 		LeaseAcquireInterval:    13 * time.Second,
 		RequestTimeout:          30 * time.Second,
-		MaxConcurrentOperations: 50,
-		MaxLeasesPerAcquireCycle: 0, // unlimited — semaphore guards HTTP/2
+		MaxLeasesPerAcquireCycle: 0, // unlimited — HTTP/2 transport manages concurrency
 	}
 }
