@@ -84,6 +84,7 @@ func NewClientWithKey(endpoint string, cred KeyCredential, o *ClientOptions) (*C
 	enableCrossRegionRetries := true
 	if o != nil {
 		preferredRegions = o.PreferredRegions
+		applyGatewayConnectionLimit(o)
 	}
 	o = withDefaultTransport(o)
 
@@ -132,6 +133,7 @@ func NewClient(endpoint string, cred azcore.TokenCredential, o *ClientOptions) (
 	enableCrossRegionRetries := true
 	if o != nil {
 		preferredRegions = o.PreferredRegions
+		applyGatewayConnectionLimit(o)
 	}
 	o = withDefaultTransport(o)
 	gem, err := newGlobalEndpointManager(endpoint, newInternalPipeline(newCosmosBearerTokenPolicy(cred, scope, nil), o), preferredRegions, 0, enableCrossRegionRetries)
