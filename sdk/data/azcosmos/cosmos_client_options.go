@@ -4,7 +4,13 @@
 package azcosmos
 
 import (
+	"crypto/tls"
+	"net"
+	"net/http"
+	"time"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"golang.org/x/net/http2"
 )
 
 // ClientOptions defines the options for the Cosmos client.
@@ -15,4 +21,48 @@ type ClientOptions struct {
 	EnableContentResponseOnWrite bool
 	// PreferredRegions is a list of regions to be used when initializing the client in case the default region fails.
 	PreferredRegions []string
+	// GatewayMaxConnections controls how many TCP connections the HTTP/2
+	// transport opens to the Cosmos gateway. The default Go HTTP/2 transport
+	// uses a single connection per host, which limits throughput to ~100
+	// concurrent streams. Increase this when running many concurrent
+	// operations (e.g., ChangeFeed Processor with thousands of partitions).
+	// The .NET SDK defaults to 50. Set to 0 for the Go default (1 connection).
+	GatewayMaxConnections int
+}
+
+// newHighConcurrencyTransport creates an *http.Client that opens multiple
+// HTTP/2 connections per host instead of the default single connection.
+func newHighConcurrencyTransport(maxConnsPerHost int) *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          maxConnsPerHost * 10,
+		MaxIdleConnsPerHost:   maxConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion:    tls.VersionTLS12,
+			Renegotiation: tls.RenegotiateFreelyAsClient,
+		},
+	}
+	if h2Transport, err := http2.ConfigureTransports(transport); err == nil {
+		h2Transport.ReadIdleTimeout = 10 * time.Second
+		h2Transport.PingTimeout = 5 * time.Second
+	}
+	return &http.Client{Transport: transport}
+}
+
+// applyGatewayConnectionLimit sets a high-concurrency transport on the
+// ClientOptions if GatewayMaxConnections is configured and no custom
+// transport was already provided.
+func applyGatewayConnectionLimit(o *ClientOptions) {
+	if o.GatewayMaxConnections > 0 && o.Transport == nil {
+		o.Transport = newHighConcurrencyTransport(o.GatewayMaxConnections)
+	}
 }
