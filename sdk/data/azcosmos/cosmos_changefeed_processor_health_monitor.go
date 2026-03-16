@@ -6,6 +6,7 @@ package azcosmos
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // LeaseCloseReason describes why a lease was released.
@@ -74,6 +75,16 @@ type ChangeFeedProcessorHealthMonitor struct {
 	// total number of feed ranges (physical partitions) in the monitored container.
 	// Use this to metric partition count without polling GetCurrentState.
 	OnSyncComplete func(ctx context.Context, totalRanges int)
+
+	// OnPollComplete is called after every GetChangeFeed poll with timing and outcome.
+	// Use for poll duration histograms and outcome breakdowns per lease.
+	OnPollComplete func(ctx context.Context, leaseID string, duration time.Duration, itemCount int, err error)
+
+	// OnSupervisorStart is called when a supervisor goroutine begins running.
+	OnSupervisorStart func(ctx context.Context, leaseID string)
+
+	// OnSupervisorStop is called when a supervisor goroutine exits (for any reason).
+	OnSupervisorStop func(ctx context.Context, leaseID string)
 }
 
 // notifyLeaseAcquired calls OnLeaseAcquired if the monitor and callback are non-nil.
@@ -143,5 +154,23 @@ func (m *ChangeFeedProcessorHealthMonitor) notifyProcessingError(ctx context.Con
 func (m *ChangeFeedProcessorHealthMonitor) notifySyncComplete(ctx context.Context, totalRanges int) {
 	if m != nil && m.OnSyncComplete != nil {
 		m.OnSyncComplete(ctx, totalRanges)
+	}
+}
+
+func (m *ChangeFeedProcessorHealthMonitor) notifyPollComplete(ctx context.Context, leaseID string, duration time.Duration, itemCount int, err error) {
+	if m != nil && m.OnPollComplete != nil {
+		m.OnPollComplete(ctx, leaseID, duration, itemCount, err)
+	}
+}
+
+func (m *ChangeFeedProcessorHealthMonitor) notifySupervisorStart(ctx context.Context, leaseID string) {
+	if m != nil && m.OnSupervisorStart != nil {
+		m.OnSupervisorStart(ctx, leaseID)
+	}
+}
+
+func (m *ChangeFeedProcessorHealthMonitor) notifySupervisorStop(ctx context.Context, leaseID string) {
+	if m != nil && m.OnSupervisorStop != nil {
+		m.OnSupervisorStop(ctx, leaseID)
 	}
 }

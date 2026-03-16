@@ -110,6 +110,9 @@ func isNonRetryableStatusCode(statusCode int) bool {
 // run starts the poller and renewer goroutines. The first error from either
 // goroutine cancels both and is returned to the caller.
 func (s *changeFeedProcessorSupervisor) run(ctx context.Context) error {
+	s.monitor.notifySupervisorStart(ctx, s.lease.ID)
+	defer s.monitor.notifySupervisorStop(ctx, s.lease.ID)
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -210,8 +213,13 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 		defer cancel()
 	}
 
+	pollStart := time.Now()
 	resp, err := s.container.GetChangeFeed(reqCtx, &opts)
+	pollDuration := time.Since(pollStart)
+
 	if err != nil {
+		s.monitor.notifyPollComplete(ctx, s.lease.ID, pollDuration, 0, err)
+
 		var responseErr *azcore.ResponseError
 		if errors.As(err, &responseErr) {
 			// 410 Gone — partition split or merge. Stop and let orchestrator re-sync.
@@ -249,6 +257,9 @@ func (s *changeFeedProcessorSupervisor) poll(ctx context.Context) (time.Duration
 		s.monitor.notifyProcessingError(ctx, s.lease.ID, cfErr)
 		return 0, cfErr
 	}
+
+	itemCount := int(resp.Count)
+	s.monitor.notifyPollComplete(ctx, s.lease.ID, pollDuration, itemCount, nil)
 
 	if resp.RawResponse != nil && resp.RawResponse.StatusCode == http.StatusNotModified {
 		return 0, nil
