@@ -179,8 +179,9 @@ func (e *ChangeFeedEstimator) Stop() {
 	}
 }
 
-// estimatePartitionLag probes the change feed for a single partition to count
+// estimatePartitionLag probes the change feed for a single partition to estimate
 // how many items are available from the lease's continuation token.
+// Uses a single read (like the .NET SDK) instead of paging through the feed.
 func (e *ChangeFeedEstimator) estimatePartitionLag(ctx context.Context, lease *changeFeedProcessorLease) (int, error) {
 	if lease.FeedRange == nil {
 		return 0, fmt.Errorf("lease %s has no feed range", lease.ID)
@@ -195,31 +196,15 @@ func (e *ChangeFeedEstimator) estimatePartitionLag(ctx context.Context, lease *c
 		opts.Continuation = &lease.ContinuationToken
 	}
 
-	totalCount := 0
-	// Read up to a few pages to estimate lag. We cap at 10 pages to avoid
-	// reading the entire change feed for very-behind partitions.
-	maxPages := 10
-	for page := 0; page < maxPages; page++ {
-		resp, err := e.monitoredContainer.GetChangeFeed(ctx, &opts)
-		if err != nil {
-			if page == 0 {
-				return 0, err
-			}
-			break
-		}
-
-		// 304 Not Modified = fully caught up
-		if resp.RawResponse != nil && resp.RawResponse.StatusCode == 304 {
-			break
-		}
-
-		totalCount += resp.Count
-
-		if resp.ContinuationToken == "" {
-			break
-		}
-		opts.Continuation = &resp.ContinuationToken
+	resp, err := e.monitoredContainer.GetChangeFeed(ctx, &opts)
+	if err != nil {
+		return 0, err
 	}
 
-	return totalCount, nil
+	// 304 Not Modified = fully caught up
+	if resp.RawResponse != nil && resp.RawResponse.StatusCode == 304 {
+		return 0, nil
+	}
+
+	return resp.Count, nil
 }
