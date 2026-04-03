@@ -5,7 +5,10 @@ package azcosmos
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -181,7 +184,8 @@ func (e *ChangeFeedEstimator) Stop() {
 
 // estimatePartitionLag probes the change feed for a single partition to estimate
 // how many items are available from the lease's continuation token.
-// Uses a single read (like the .NET SDK) instead of paging through the feed.
+// Uses the .NET SDK approach: one read per partition, then compares the session
+// token LSN (latest) against the first returned item's _lsn (current position).
 func (e *ChangeFeedEstimator) estimatePartitionLag(ctx context.Context, lease *changeFeedProcessorLease) (int, error) {
 	if lease.FeedRange == nil {
 		return 0, fmt.Errorf("lease %s has no feed range", lease.ID)
@@ -189,7 +193,7 @@ func (e *ChangeFeedEstimator) estimatePartitionLag(ctx context.Context, lease *c
 
 	opts := ChangeFeedOptions{
 		FeedRange:    lease.FeedRange,
-		MaxItemCount: e.options.MaxItemCount,
+		MaxItemCount: 1, // only need the first item's _lsn
 	}
 
 	if lease.ContinuationToken != "" {
@@ -206,5 +210,69 @@ func (e *ChangeFeedEstimator) estimatePartitionLag(ctx context.Context, lease *c
 		return 0, nil
 	}
 
-	return resp.Count, nil
+	// Extract the latest LSN from the session token header.
+	// Session token format: "{pkRangeId}:{version}#{globalLsn}"
+	sessionToken := resp.RawResponse.Header.Get("x-ms-session-token")
+	latestLSN := extractLSNFromSessionToken(sessionToken)
+
+	// Extract the current LSN from the first returned item's _lsn field.
+	// If no items, we're caught up (latestLSN == currentLSN).
+	var currentLSN int64
+	if len(resp.Documents) > 0 {
+		currentLSN = extractLSNFromDocument(resp.Documents[0]) - 1
+	} else {
+		currentLSN = latestLSN
+	}
+
+	if currentLSN < 0 {
+		currentLSN = 0
+	}
+
+	lag := latestLSN - currentLSN
+	if lag < 0 {
+		lag = 0
+	}
+
+	return int(lag), nil
+}
+
+// extractLSNFromSessionToken parses the global LSN from a Cosmos session token.
+// Format: "{pkRangeId}:{version}#{globalLsn}" e.g. "0:1234#5678"
+func extractLSNFromSessionToken(sessionToken string) int64 {
+	if sessionToken == "" {
+		return 0
+	}
+
+	// Strip the pkRangeId prefix
+	colonIdx := strings.IndexByte(sessionToken, ':')
+	if colonIdx >= 0 {
+		sessionToken = sessionToken[colonIdx+1:]
+	}
+
+	// Split by '#' and take the global LSN (second segment)
+	segments := strings.Split(sessionToken, "#")
+	if len(segments) < 2 {
+		n, _ := strconv.ParseInt(segments[0], 10, 64)
+		return n
+	}
+
+	n, _ := strconv.ParseInt(segments[1], 10, 64)
+	return n
+}
+
+// extractLSNFromDocument reads the _lsn field from a raw JSON document.
+func extractLSNFromDocument(doc []byte) int64 {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(doc, &obj); err != nil {
+		return 0
+	}
+
+	switch v := obj["_lsn"].(type) {
+	case float64:
+		return int64(v)
+	case string:
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
+	}
+	return 0
 }

@@ -58,3 +58,37 @@ func TestNewChangeFeedEstimatorValidation(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "monitoredContainer")
 }
+
+func TestExtractLSNFromSessionToken(t *testing.T) {
+	// Standard format: pkRangeId:version#globalLsn
+	require.Equal(t, int64(5678), extractLSNFromSessionToken("0:1234#5678"))
+
+	// Multiple segments
+	require.Equal(t, int64(9999), extractLSNFromSessionToken("42:100#9999"))
+
+	// No pkRangeId prefix
+	require.Equal(t, int64(5678), extractLSNFromSessionToken("1234#5678"))
+
+	// Single number (no # separator)
+	require.Equal(t, int64(1234), extractLSNFromSessionToken("0:1234"))
+
+	// Empty
+	require.Equal(t, int64(0), extractLSNFromSessionToken(""))
+
+	// Just a number
+	require.Equal(t, int64(42), extractLSNFromSessionToken("42"))
+}
+
+func TestExtractLSNFromDocument(t *testing.T) {
+	// Numeric _lsn
+	require.Equal(t, int64(12345), extractLSNFromDocument([]byte(`{"id":"doc1","_lsn":12345}`)))
+
+	// String _lsn
+	require.Equal(t, int64(67890), extractLSNFromDocument([]byte(`{"id":"doc1","_lsn":"67890"}`)))
+
+	// Missing _lsn
+	require.Equal(t, int64(0), extractLSNFromDocument([]byte(`{"id":"doc1"}`)))
+
+	// Invalid JSON
+	require.Equal(t, int64(0), extractLSNFromDocument([]byte(`not json`)))
+}
