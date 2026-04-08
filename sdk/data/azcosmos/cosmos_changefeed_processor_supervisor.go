@@ -313,7 +313,13 @@ func (s *changeFeedProcessorSupervisor) buildChangeFeedOptions() ChangeFeedOptio
 // checkpoint persists the continuation token from the response into the lease.
 // Returns errLeaseLost if the lease was taken by another instance (412).
 func (s *changeFeedProcessorSupervisor) checkpoint(ctx context.Context, resp *ChangeFeedResponse) error {
-	resp.PopulateCompositeContinuationToken()
+	// Build the composite continuation token from the response's feed range
+	// and ETag. In beta.6+ the queue-driven GetChangeFeed populates
+	// ContinuationToken internally, but we still need the composite form for
+	// our lease store so we can resume with the correct feed range context.
+	if token, err := resp.GetCompositeContinuationToken(); err == nil && token != "" {
+		resp.ContinuationToken = token
+	}
 	if resp.ContinuationToken != "" {
 		s.lease.ContinuationToken = resp.ContinuationToken
 	}

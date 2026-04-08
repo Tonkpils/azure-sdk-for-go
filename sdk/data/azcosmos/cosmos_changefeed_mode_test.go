@@ -142,37 +142,37 @@ func TestChangeFeedModeDefaults(t *testing.T) {
 }
 
 func TestChangeFeedOptionsFullFidelityHeaders(t *testing.T) {
+	dummyHead := newChangeFeedRange("", "FF", nil)
+
 	// AllVersionsAndDeletes mode
 	options := &ChangeFeedOptions{
 		Mode: ChangeFeedModeAllVersionsAndDeletes,
 	}
-	headers := options.toHeaders(nil)
-	if headers == nil {
-		t.Fatal("toHeaders should return non-nil")
+	headers, err := options.buildRequestHeaders(dummyHead, "0")
+	if err != nil {
+		t.Fatalf("buildRequestHeaders error: %v", err)
 	}
 
-	h := *headers
-	if h[cosmosHeaderChangeFeed] != cosmosHeaderValuesChangeFeedFullFidelity {
-		t.Errorf("Expected A-IM to be %v, got %v", cosmosHeaderValuesChangeFeedFullFidelity, h[cosmosHeaderChangeFeed])
+	if headers[cosmosHeaderChangeFeed] != cosmosHeaderValuesChangeFeedFullFidelity {
+		t.Errorf("Expected A-IM to be %v, got %v", cosmosHeaderValuesChangeFeedFullFidelity, headers[cosmosHeaderChangeFeed])
 	}
-	if h[cosmosHeaderChangeFeedWireFormatVersion] != cosmosHeaderValuesChangeFeedWireFormat {
-		t.Errorf("Expected wire format version to be %v, got %v", cosmosHeaderValuesChangeFeedWireFormat, h[cosmosHeaderChangeFeedWireFormatVersion])
+	if headers[cosmosHeaderChangeFeedWireFormatVersion] != cosmosHeaderValuesChangeFeedWireFormat {
+		t.Errorf("Expected wire format version to be %v, got %v", cosmosHeaderValuesChangeFeedWireFormat, headers[cosmosHeaderChangeFeedWireFormatVersion])
 	}
 
 	// LatestVersion mode (default)
 	latestOptions := &ChangeFeedOptions{
 		Mode: ChangeFeedModeLatestVersion,
 	}
-	latestHeaders := latestOptions.toHeaders(nil)
-	if latestHeaders == nil {
-		t.Fatal("toHeaders should return non-nil")
+	latestHeaders, err := latestOptions.buildRequestHeaders(dummyHead, "0")
+	if err != nil {
+		t.Fatalf("buildRequestHeaders error: %v", err)
 	}
 
-	lh := *latestHeaders
-	if lh[cosmosHeaderChangeFeed] != cosmosHeaderValuesChangeFeed {
-		t.Errorf("Expected A-IM to be %v, got %v", cosmosHeaderValuesChangeFeed, lh[cosmosHeaderChangeFeed])
+	if latestHeaders[cosmosHeaderChangeFeed] != cosmosHeaderValuesChangeFeed {
+		t.Errorf("Expected A-IM to be %v, got %v", cosmosHeaderValuesChangeFeed, latestHeaders[cosmosHeaderChangeFeed])
 	}
-	if _, exists := lh[cosmosHeaderChangeFeedWireFormatVersion]; exists {
+	if _, exists := latestHeaders[cosmosHeaderChangeFeedWireFormatVersion]; exists {
 		t.Error("Expected no wire format version header for LatestVersion mode")
 	}
 }
