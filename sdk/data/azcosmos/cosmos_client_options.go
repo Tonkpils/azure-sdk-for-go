@@ -21,17 +21,19 @@ type ClientOptions struct {
 	EnableContentResponseOnWrite bool
 	// PreferredRegions is a list of regions to be used when initializing the client in case the default region fails.
 	PreferredRegions []string
-	// GatewayMaxConnections controls how many TCP connections the HTTP/2
-	// transport opens to the Cosmos gateway. The default Go HTTP/2 transport
-	// uses a single connection per host, which limits throughput to ~100
-	// concurrent streams. Increase this when running many concurrent
-	// operations (e.g., ChangeFeed Processor with thousands of partitions).
-	// The .NET SDK defaults to 50. Set to 0 for the Go default (1 connection).
+	// GatewayMaxConnections controls the maximum number of TCP connections
+	// the HTTP transport maintains to the Cosmos gateway. Setting this
+	// creates a custom transport with MaxConnsPerHost, which stabilizes
+	// connection management under high concurrency. This was found to
+	// resolve context deadline exceeded errors when running thousands of
+	// concurrent operations (e.g., ChangeFeed Processor with 9,200 partitions).
+	// The .NET SDK defaults GatewayModeMaxConnectionLimit to 50.
+	// Set to 0 for the Go default behavior.
 	GatewayMaxConnections int
 }
 
-// newHighConcurrencyTransport creates an *http.Client that opens multiple
-// HTTP/2 connections per host instead of the default single connection.
+// newHighConcurrencyTransport creates an *http.Client with MaxConnsPerHost
+// set to stabilize connection management under high concurrency workloads.
 func newHighConcurrencyTransport(maxConnsPerHost int) *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
