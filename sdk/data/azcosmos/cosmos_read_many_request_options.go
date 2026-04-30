@@ -25,6 +25,19 @@ type ReadManyOptions struct {
 	// MaxConcurrency indicates the maximum number of concurrent operations to use when reading many items.
 	// If not set, the SDK will determine an optimal number of concurrent operations to use.
 	MaxConcurrency *int32
+	// ExcludeRegions allows the caller to skip listed regions for this
+	// read-many operation. Region names are case-sensitive and must match the
+	// account's preferred-region list. See [ItemOptions.ExcludeRegions] for
+	// full behavior. Because read-many is internally fanned out as a set of
+	// queries, the exclusion is propagated to each underlying query request.
+	ExcludeRegions []string
+}
+
+func (options *ReadManyOptions) getExcludeRegions() []string {
+	if options == nil {
+		return nil
+	}
+	return options.ExcludeRegions
 }
 
 func (options *ReadManyOptions) toHeaders() *map[string]string {

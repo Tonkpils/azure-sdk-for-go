@@ -284,13 +284,13 @@ func TestGlobalEndpointManagerResolveEndpointSingleMasterDocumentOperation(t *te
 
 	// Reads should follow preferred locations
 	writeOperation := false
-	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false)
+	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "central-us"))
 
 	// Writes should go to primary endpoint
 	writeOperation = true
-	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false)
+	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "east-us"))
 }
@@ -309,13 +309,13 @@ func TestGlobalEndpointManagerResolveEndpointMultiMasterDocumentOperation(t *tes
 
 	// Reads and Writes should follow preferred locations
 	writeOperation := false
-	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false)
+	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "central-us"))
 
 	// Writes should go to primary endpoint
 	writeOperation = true
-	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false)
+	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeDocument, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "central-us"))
 }
@@ -334,13 +334,13 @@ func TestGlobalEndpointManagerResolveEndpointSingleMasterMetadataOperation(t *te
 
 	// Reads should follow preferred locations
 	writeOperation := false
-	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false)
+	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "central-us"))
 
 	// Writes should go to primary endpoint
 	writeOperation = true
-	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false)
+	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "east-us"))
 }
@@ -359,13 +359,13 @@ func TestGlobalEndpointManagerResolveEndpointMultiMasterMetadataOperation(t *tes
 
 	// Reads should follow preferred locations
 	writeOperation := false
-	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false)
+	selectedEndpoint := mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "central-us"))
 
 	// Writes should go to primary endpoint
 	writeOperation = true
-	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false)
+	selectedEndpoint = mockGem.ResolveServiceEndpoint(0, resourceTypeCollection, writeOperation, false, nil)
 
 	assert.True(t, strings.Contains(selectedEndpoint.Host, "east-us"))
 }

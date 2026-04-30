@@ -494,6 +494,16 @@ func (c *Client) createRequest(
 
 	addDefaultHeaders(req)
 
+	// If the caller's options struct supplies per-request region exclusions,
+	// hoist them onto the operation context so the retry policy can consume
+	// them when resolving the endpoint for each attempt. Done here so every
+	// operation site picks it up automatically without per-site plumbing.
+	if operationContext.excludeRegions == nil {
+		if provider, ok := requestOptions.(excludeRegionsProvider); ok && provider != nil {
+			operationContext.excludeRegions = provider.getExcludeRegions()
+		}
+	}
+
 	req.SetOperationValue(operationContext)
 
 	if requestEnricher != nil {
@@ -556,6 +566,10 @@ type pipelineRequestOptions struct {
 	resourceAddress       string
 	isRidBased            bool
 	isWriteOperation      bool
+	// excludeRegions is the per-request region exclusion list copied from the
+	// caller's options struct (e.g. ItemOptions.ExcludeRegions). It is read by
+	// the clientRetryPolicy when resolving the endpoint for each attempt.
+	excludeRegions []string
 }
 
 func addDefaultHeaders(req *policy.Request) {

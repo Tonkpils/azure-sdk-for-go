@@ -49,6 +49,18 @@ type QueryOptions struct {
 	// QueryEngine can be set to enable the use of an external query engine for processing cross-partition queries.
 	// This is a preview feature, which is NOT SUPPORTED in production, and is subject to breaking changes.
 	QueryEngine queryengine.QueryEngine
+	// ExcludeRegions allows the caller to skip listed regions for this single
+	// query. Region names are case-sensitive and must match the account's
+	// preferred-region list. See [ItemOptions.ExcludeRegions] for full
+	// behavior, including the single-master write caveat.
+	ExcludeRegions []string
+}
+
+func (options *QueryOptions) getExcludeRegions() []string {
+	if options == nil {
+		return nil
+	}
+	return options.ExcludeRegions
 }
 
 func (options *QueryOptions) toHeaders() *map[string]string {

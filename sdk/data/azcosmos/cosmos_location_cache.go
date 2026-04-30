@@ -113,7 +113,25 @@ func (lc *locationCache) update(writeLocations []accountRegion, readLocations []
 	return nil
 }
 
-func (lc *locationCache) resolveServiceEndpoint(locationIndex int, resourceType resourceType, isWriteOperation, useWriteEndpoint bool) url.URL {
+// resolveServiceEndpoint picks the endpoint to route a single attempt to.
+//
+// Behavior matches the .NET SDK's LocationCache.ResolveServiceEndpoint:
+//   - The bypass branch (single-master document writes, metadata writes, or
+//     any operation routed to the write region) flips between the first two
+//     write regions and DOES NOT consult excludeRegions. This mirrors the
+//     .NET SDK exactly.
+//   - The applicable-endpoints branch (reads, and document writes on
+//     multi-write accounts) iterates the preferred-region list, looks up the
+//     raw endpoint-by-location map, skips any region in excludeRegions, and
+//     indexes into the resulting filtered list. If every preferred region is
+//     excluded, falls back to the default endpoint.
+//
+// Filtering uses the raw availability map keyed by region name (matching
+// .NET) rather than the cached readEndpoints/writeEndpoints lists, so the
+// applicable list reflects the user's stated preference order without the
+// SDK's unavailability reordering. When excludeRegions is empty the function
+// uses the cached fast path, so the common case is unchanged.
+func (lc *locationCache) resolveServiceEndpoint(locationIndex int, resourceType resourceType, isWriteOperation, useWriteEndpoint bool, excludeRegions []string) url.URL {
 	if (isWriteOperation || useWriteEndpoint) && !lc.canUseMultipleWriteLocsToRoute(resourceType) {
 		if lc.enableCrossRegionRetries && len(lc.locationInfo.availWriteLocations) > 0 {
 			locationIndex = min(locationIndex%2, len(lc.locationInfo.availWriteLocations)-1)
@@ -123,11 +141,48 @@ func (lc *locationCache) resolveServiceEndpoint(locationIndex int, resourceType 
 		return lc.defaultEndpoint
 	}
 
+	if len(excludeRegions) > 0 {
+		return lc.getApplicableEndpoint(locationIndex, isWriteOperation, excludeRegions)
+	}
+
 	endpoints := lc.locationInfo.readEndpoints
 	if isWriteOperation {
 		endpoints = lc.locationInfo.writeEndpoints
 	}
 	return endpoints[locationIndex%len(endpoints)]
+}
+
+// getApplicableEndpoint returns the endpoint to route to for a request that
+// supplied an excludeRegions filter. It mirrors the .NET SDK's
+// LocationCache.GetApplicableEndpoints by iterating the preferred-region list,
+// skipping excluded regions, and indexing the filtered list. If the caller
+// excludes every preferred region the default endpoint is used as a fallback,
+// matching .NET semantics.
+func (lc *locationCache) getApplicableEndpoint(locationIndex int, isWriteOperation bool, excludeRegions []string) url.URL {
+	excludeSet := make(map[string]struct{}, len(excludeRegions))
+	for _, r := range excludeRegions {
+		excludeSet[r] = struct{}{}
+	}
+
+	regionByEndpoint := lc.locationInfo.availReadEndpointsByLocation
+	if isWriteOperation {
+		regionByEndpoint = lc.locationInfo.availWriteEndpointsByLocation
+	}
+
+	applicable := make([]url.URL, 0, len(lc.locationInfo.prefLocations))
+	for _, region := range lc.locationInfo.prefLocations {
+		if _, excluded := excludeSet[region]; excluded {
+			continue
+		}
+		if endpoint, ok := regionByEndpoint[region]; ok {
+			applicable = append(applicable, endpoint)
+		}
+	}
+
+	if len(applicable) == 0 {
+		return lc.defaultEndpoint
+	}
+	return applicable[locationIndex%len(applicable)]
 }
 
 func (lc *locationCache) canUseMultipleWriteLocsToRoute(resourceType resourceType) bool {

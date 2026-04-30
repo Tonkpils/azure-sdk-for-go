@@ -37,6 +37,31 @@ type ItemOptions struct {
 	IfMatchEtag *azcore.ETag
 	// Options for operations in the dedicated gateway.
 	DedicatedGatewayRequestOptions *DedicatedGatewayRequestOptions
+	// ExcludeRegions allows the caller to skip listed regions for this single
+	// operation. Region names are case-sensitive and must match values in the
+	// account's preferred-region list (e.g. "East US 2").
+	//
+	// Behavior mirrors the .NET SDK's RequestOptions.ExcludeRegions:
+	//   - Reads: excluded regions are skipped, and the SDK routes to the next
+	//     non-excluded preferred region.
+	//   - Document writes on multi-write accounts: excluded regions are
+	//     skipped.
+	//   - Document writes on single-master accounts and metadata writes: the
+	//     filter is silently ignored because routing is fixed to the write
+	//     region. This is parity with the .NET SDK.
+	//   - If every preferred region is excluded, the SDK falls back to the
+	//     account's default endpoint.
+	//
+	// ExcludeRegions does not bypass the SDK's cross-region failover retries;
+	// retries continue to respect the filter.
+	ExcludeRegions []string
+}
+
+func (options *ItemOptions) getExcludeRegions() []string {
+	if options == nil {
+		return nil
+	}
+	return options.ExcludeRegions
 }
 
 func (options *ItemOptions) toHeaders() *map[string]string {

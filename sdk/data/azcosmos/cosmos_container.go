@@ -478,6 +478,12 @@ func (c *ContainerClient) ReadManyItems(
 	operationContext := pipelineRequestOptions{
 		resourceType:    resourceTypeDocument,
 		resourceAddress: c.link,
+		// Pre-populate excludeRegions here so it survives the internal
+		// ReadManyOptions -> QueryOptions translation in
+		// executeReadManyWithQueries. Both the engine and queries paths
+		// pass operationContext through to createRequest, which preserves a
+		// non-nil excludeRegions.
+		excludeRegions: readManyOptions.ExcludeRegions,
 	}
 
 	return c.executeReadManyWithQueries(ctx, itemIdentities, readManyOptions, operationContext)
