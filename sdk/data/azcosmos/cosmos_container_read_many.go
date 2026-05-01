@@ -119,6 +119,10 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 
 	// cancellation channel to short-circuit on first error
 	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeDone := func() {
+		closeOnce.Do(func() { close(done) })
+	}
 
 	// Start workers
 	workerCount := concurrency
@@ -152,13 +156,7 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 						}
 					}
 					results[idx].err = err
-					// signal cancellation
-					select {
-					case <-done:
-					default:
-						close(done)
-					}
-					// store error and continue to allow workers to exit
+					closeDone()
 					return
 				}
 				results[idx].value = itemResponse.Value
