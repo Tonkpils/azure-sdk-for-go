@@ -6,6 +6,7 @@ package azcosmos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -104,23 +105,37 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 		concurrency = determineConcurrency(readManyOptions.MaxConcurrency)
 	}
 
-	// Prepare result slots to preserve input order
+	// Prepare result slots to preserve input order. Each worker writes to a
+	// unique idx, so per-slot writes are race-free without a lock.
 	type slot struct {
 		value         []byte
 		requestCharge float32
-		err           error
 	}
-
 	results := make([]slot, len(items))
+
+	// Cancellation pattern: derive a cancellable child context. The first
+	// worker to encounter an error (or panic) wins via sync.Once -- it
+	// records the error and cancels, signalling all other workers to bail.
+	// context.WithCancel's cancel() is itself idempotent, but coalescing
+	// through Once also makes the firstErr capture atomic with cancellation.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		errOnce  sync.Once
+		firstErr error
+	)
+	setErr := func(err error) {
+		errOnce.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
 
 	// Worker pool
 	var wg sync.WaitGroup
 	jobs := make(chan int)
 
-	// cancellation channel to short-circuit on first error
-	done := make(chan struct{})
-
-	// Start workers
 	workerCount := concurrency
 	if workerCount > len(items) {
 		workerCount = len(items)
@@ -134,11 +149,18 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Convert any panic in this worker into the first error rather
+			// than letting the runtime kill the process. Without this, a
+			// panic in the http stack (or any user-supplied retry hook)
+			// crashes whatever goroutine ReadManyItems was called from.
+			defer func() {
+				if r := recover(); r != nil {
+					setErr(fmt.Errorf("panic in readMany worker: %v", r))
+				}
+			}()
 			for idx := range jobs {
-				select {
-				case <-done:
+				if ctx.Err() != nil {
 					return
-				default:
 				}
 				item := items[idx]
 
@@ -151,14 +173,7 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 							continue
 						}
 					}
-					results[idx].err = err
-					// signal cancellation
-					select {
-					case <-done:
-					default:
-						close(done)
-					}
-					// store error and continue to allow workers to exit
+					setErr(err)
 					return
 				}
 				results[idx].value = itemResponse.Value
@@ -167,27 +182,28 @@ func (c *ContainerClient) executeReadManyWithPointReads(items []ItemIdentity, re
 		}()
 	}
 
-	// Start a goroutine to distribute item indices to the worker pool via the jobs channel.
+	// Feeder: distribute item indices to the worker pool until cancelled.
 	go func() {
+		defer close(jobs)
 		for i := range items {
 			select {
-			case <-done:
+			case <-ctx.Done():
 				return
-			default:
+			case jobs <- i:
 			}
-			jobs <- i
 		}
-		close(jobs)
 	}()
 
 	wg.Wait()
 
-	// Check for errors and build response in original order
+	if firstErr != nil {
+		return ReadManyItemsResponse{}, firstErr
+	}
+
+	// Build response in original order. Items that 404'd are simply absent
+	// (results[i].value == nil for them) and dropped from the response.
 	var readManyResponse ReadManyItemsResponse
 	for i := range results {
-		if results[i].err != nil {
-			return ReadManyItemsResponse{}, results[i].err
-		}
 		if results[i].value != nil {
 			readManyResponse.Items = append(readManyResponse.Items, results[i].value)
 			readManyResponse.RequestCharge += results[i].requestCharge
